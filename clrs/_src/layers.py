@@ -31,7 +31,7 @@ class SemiringLayer(hk.Module):
         """
         super().__init__(name=name)
         self.input_size = None
-        self.basis = None
+        self.basis = basis
         self.output_size = output_size
         self.with_bias = with_bias
         self.w_init = w_init
