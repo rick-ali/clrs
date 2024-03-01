@@ -117,8 +117,6 @@ flags.DEFINE_boolean('freeze_processor', False,
 
 FLAGS = flags.FLAGS
 
-rng_seed = 42
-
 
 PRED_AS_INPUT_ALGOS = [
     'binary_search',
@@ -211,7 +209,7 @@ def make_sampler(length: int,
     num_samples = clrs.CLRS30[split]['num_samples'] * multiplier
     sampler, spec = clrs.build_sampler(
         algorithm,
-        seed=rng.randint(rng_seed),
+        seed=rng.randint(FLAGS.seed),
         num_samples=num_samples,
         length=length,
         **sampler_kwargs,
@@ -375,7 +373,7 @@ def main(unused_argv):
   train_lengths = [int(x) for x in FLAGS.train_lengths]
 
   rng = np.random.RandomState(FLAGS.seed)
-  rng_key = jax.random.PRNGKey(rng.randint(rng_seed))
+  rng_key = jax.random.PRNGKey(rng.randint(FLAGS.seed))
 
   # Create samplers
   (train_samplers,

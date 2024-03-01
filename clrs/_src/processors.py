@@ -78,7 +78,7 @@ class Processor(hk.Module):
 
 
 class AsynchronousNetBase(Processor):
-  """Pointer Graph Networks (Veličković et al., NeurIPS 2020)."""
+  """Asynchronous L3 net."""
 
   def __init__(
       self,
