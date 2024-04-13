@@ -23,7 +23,6 @@ import haiku as hk
 import jax
 import jax.numpy as jnp
 import numpy as np
-from synjax._src.utils.semirings import LogSemiring
 from jax.scipy.special import logsumexp
 from clrs._src.layers import SemiringLayer
 
