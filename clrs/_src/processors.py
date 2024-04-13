@@ -92,8 +92,10 @@ class AsynchronousNetBase(Processor):
       use_triplets: bool = False,
       nb_triplet_fts: int = 8,
       gated: bool = False,
+      basis: Optional[float] = None,
       name: str = 'asynchbase',
   ):
+    name = 'asynchbase_e' if basis is None else f'asynchbase_{basis}'
     super().__init__(name=name)
     if mid_size is None:
       self.mid_size = out_size
@@ -108,6 +110,7 @@ class AsynchronousNetBase(Processor):
     self.use_triplets = use_triplets
     self.nb_triplet_fts = nb_triplet_fts
     self.gated = gated
+    self.basis = basis
 
   def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
       self,
@@ -129,10 +132,10 @@ class AsynchronousNetBase(Processor):
     m_2 = hk.Linear(self.mid_size) #this is part of psi
     m_e = hk.Linear(self.mid_size) #this is part of psi
     m_g = hk.Linear(self.mid_size) #this is part of psi
-    semiring_1 = SemiringLayer(self.mid_size)
-    semiring_2 = SemiringLayer(self.mid_size)
-    semiring_e = SemiringLayer(self.mid_size)
-    semiring_g = SemiringLayer(self.mid_size)
+    semiring_1 = SemiringLayer(self.mid_size, basis=self.basis)
+    semiring_2 = SemiringLayer(self.mid_size, basis=self.basis)
+    semiring_e = SemiringLayer(self.mid_size, basis=self.basis)
+    semiring_g = SemiringLayer(self.mid_size, basis=self.basis)
 
     o1 = hk.Linear(self.out_size)
     o2 = hk.Linear(self.out_size)
@@ -808,7 +811,8 @@ ProcessorFactory = Callable[[int], Processor]
 def get_processor_factory(kind: str,
                           use_ln: bool,
                           nb_triplet_fts: int,
-                          nb_heads: Optional[int] = None) -> ProcessorFactory:
+                          nb_heads: Optional[int] = None,
+                          basis: Optional[float] = None) -> ProcessorFactory:
   """Returns a processor factory.
 
   Args:
@@ -836,6 +840,7 @@ def get_processor_factory(kind: str,
           use_ln=use_ln,
           use_triplets=False,
           nb_triplet_fts=0,
+          basis=basis
       )
     elif kind == 'gat':
       processor = GAT(
