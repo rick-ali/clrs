@@ -398,7 +398,7 @@ def create_samplers(rng, train_lengths: List[int]):
 def main(args):
 
   wandb_project = "asynchronous_alignment"
-  wandb_run_name = f"asynch_model_e"
+  wandb_run_name = f"asynch_model_{FLAGS.basis}" if FLAGS.basis is not None else "asynch_model_e"
   wandbrun = wandb.init(project=wandb_project, name=wandb_run_name)
 
   global ALGOS
@@ -437,7 +437,8 @@ def main(args):
         FLAGS.processor_type,
         use_ln=FLAGS.use_ln,
         nb_triplet_fts=FLAGS.nb_triplet_fts,
-        nb_heads=FLAGS.nb_heads
+        nb_heads=FLAGS.nb_heads,
+        basis=FLAGS.basis
     )
     model_params = dict(
         processor_factory=processor_factory,
