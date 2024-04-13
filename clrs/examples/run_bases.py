@@ -149,9 +149,9 @@ flags.DEFINE_enum('processor_type', 'asynchronous',
 flags.DEFINE_list('bases', [None, 2, 10, 5],
 									'Bases for the asynchronous processor')
 
-flags.DEFINE_string('checkpoint_path', '/tmp/CLRS30',
+flags.DEFINE_string('checkpoint_path', './tmp/CLRS30',
 										'Path in which checkpoints are saved.')
-flags.DEFINE_string('dataset_path', '/tmp/CLRS30',
+flags.DEFINE_string('dataset_path', './tmp/CLRS30',
 										'Path in which dataset is stored.')
 flags.DEFINE_boolean('freeze_processor', False,
 										 'Whether to freeze the processor of the model.')
