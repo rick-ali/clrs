@@ -6,6 +6,9 @@ build/
 dist/
 venv/
 
+# wandb
+wandb/
+
 # Mac OS
 .DS_Store
 
