@@ -58,7 +58,14 @@ class SemiringLayer(hk.Module):
         w = hk.get_parameter("w", [input_size, output_size], dtype, init=w_init)
 
         if self.basis is None:  # Default basis 
-            out = jnp.log(jnp.dot(jnp.exp(inputs), jnp.exp(w), precision=precision))
+            max_inputs, max_w = np.max(inputs), np.max(w)
+            exp_inputs, exp_w = inputs - max_inputs, w - max_w
+            exp_inputs = jnp.exp(exp_inputs)
+            exp_w = jnp.exp(exp_w)
+            out = jnp.dot(exp_inputs, exp_w)
+            out = jnp.log(out)
+            out += max_inputs + max_w
+            #out = jnp.log(jnp.dot(jnp.exp(inputs), jnp.exp(w), precision=precision))
         else:
             out = jnp.log(jnp.dot(self.basis**(inputs), self.basis**(w), precision=precision))/jnp.log(self.basis)
         
