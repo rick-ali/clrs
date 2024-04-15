@@ -131,22 +131,22 @@ class AsynchronousNetBase(Processor):
     m_2 = hk.Linear(self.mid_size) #this is part of psi
     m_e = hk.Linear(self.mid_size) #this is part of psi
     m_g = hk.Linear(self.mid_size) #this is part of psi
-    semiring_1 = SemiringLayer(self.mid_size, basis=self.basis)
-    semiring_2 = SemiringLayer(self.mid_size, basis=self.basis)
-    semiring_e = SemiringLayer(self.mid_size, basis=self.basis)
-    semiring_g = SemiringLayer(self.mid_size, basis=self.basis)
+    # semiring_1 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+    # semiring_2 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+    # semiring_e = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+    # semiring_g = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
 
-    o1 = hk.Linear(self.out_size)
-    o2 = hk.Linear(self.out_size)
+    # o1 = hk.Linear(self.out_size)
+    # o2 = hk.Linear(self.out_size)
 
     msg_1 = m_1(z)
-    msg_1 = semiring_1(msg_1) 
+    #msg_1 = semiring_1(msg_1) 
     msg_2 = m_2(z)
-    msg_2 = semiring_2(msg_2)
+    #msg_2 = semiring_2(msg_2)
     msg_e = m_e(edge_fts)
-    msg_e = semiring_e(msg_e)
+    #msg_e = semiring_e(msg_e)
     msg_g = m_g(graph_fts)
-    msg_g = semiring_g(msg_g)
+    #msg_g = semiring_g(msg_g)
 
     tri_msgs = None
 
@@ -155,8 +155,8 @@ class AsynchronousNetBase(Processor):
         msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
     
 
-    if self._msgs_mlp_sizes is not None:
-      msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
+    # if self._msgs_mlp_sizes is not None:
+    #   msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
 
     if self.reduction == jnp.mean:
       msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
@@ -176,8 +176,8 @@ class AsynchronousNetBase(Processor):
 
     #ret = h_1 + h_2
 
-    if self.activation is not None:
-      ret = self.activation(ret)
+    # if self.activation is not None:
+    #   ret = self.activation(ret)
 
     if self.use_ln:
       ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
