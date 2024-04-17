@@ -136,7 +136,6 @@ class AsynchronousNetBase(Processor):
     m_g = hk.Linear(self.mid_size)
     semiring_1 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
     semiring_2 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
-    tmp = hk.Linear(self.mid_size)
 
     #! MESSAGE GENERATION
     if self.linear_before_message:
@@ -179,7 +178,7 @@ class AsynchronousNetBase(Processor):
     #! ###################################################
 
     #! ARGUMENT GENERATION
-    args = tmp(node_args)
+    args = None
     #! ###################################################    
 
     #! STATE UPDATE

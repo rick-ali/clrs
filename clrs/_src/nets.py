@@ -49,6 +49,7 @@ class _MessagePassingScanState:
   hint_preds: chex.Array
   output_preds: chex.Array
   hiddens: chex.Array
+  node_args: chex.Array
   lstm_state: Optional[hk.LSTMState]
 
 
@@ -162,8 +163,8 @@ class Net(hk.Module):
             probing.DataPoint(
                 name=hint.name, location=loc, type_=typ, data=hint_data))
 
-    hiddens, output_preds_cand, hint_preds, lstm_state = self._one_step_pred(
-        inputs, cur_hint, mp_state.hiddens,
+    hiddens, node_args, output_preds_cand, hint_preds, lstm_state = self._one_step_pred(
+        inputs, cur_hint, mp_state.hiddens, mp_state.node_args, 
         batch_size, nb_nodes, mp_state.lstm_state,
         spec, encs, decs, repred)
 
@@ -181,12 +182,13 @@ class Net(hk.Module):
         hint_preds=hint_preds,
         output_preds=output_preds,
         hiddens=hiddens,
+        node_args=node_args,
         lstm_state=lstm_state)
     # Save memory by not stacking unnecessary fields
     accum_mp_state = _MessagePassingScanState(  # pytype: disable=wrong-arg-types  # numpy-scalars
         hint_preds=hint_preds if return_hints else None,
         output_preds=output_preds if return_all_outputs else None,
-        hiddens=None, lstm_state=None)
+        hiddens=None, node_args=None, lstm_state=None)
 
     # Complying to jax.scan, the first returned value is the state we carry over
     # the second value is the output that will be stacked over steps.
@@ -252,6 +254,7 @@ class Net(hk.Module):
 
       nb_mp_steps = max(1, hints[0].data.shape[0] - 1)
       hiddens = jnp.zeros((batch_size, nb_nodes, self.hidden_dim))
+      node_args = jnp.zeros((batch_size, nb_nodes, self.hidden_dim))
 
       if self.use_lstm:
         lstm_state = lstm_init(batch_size * nb_nodes)
@@ -263,7 +266,7 @@ class Net(hk.Module):
 
       mp_state = _MessagePassingScanState(  # pytype: disable=wrong-arg-types  # numpy-scalars
           hint_preds=None, output_preds=None,
-          hiddens=hiddens, lstm_state=lstm_state)
+          hiddens=hiddens, node_args=node_args, lstm_state=lstm_state)
 
       # Do the first step outside of the scan because it has a different
       # computation graph.
@@ -360,6 +363,7 @@ class Net(hk.Module):
       inputs: _Trajectory,
       hints: _Trajectory,
       hidden: _Array,
+      node_args: _Array,
       batch_size: int,
       nb_nodes: int,
       lstm_state: Optional[hk.LSTMState],
@@ -397,20 +401,25 @@ class Net(hk.Module):
           raise Exception(f'Failed to process {dp}') from e
 
     # PROCESS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    nxt_hidden = hidden
+    nxt_hidden = hidden  #! self.decay??
+    nxt_args = node_args
     for _ in range(self.nb_msg_passing_steps):
-      nxt_hidden, nxt_edge = self.processor(
+      nxt_hidden, nxt_args, nxt_edge = self.processor(
           node_fts,
           edge_fts,
           graph_fts,
           adj_mat,
           nxt_hidden,
+          nxt_args,
           batch_size=batch_size,
           nb_nodes=nb_nodes,
       )
 
     if not repred:      # dropout only on training
-      nxt_hidden = hk.dropout(hk.next_rng_key(), self._dropout_prob, nxt_hidden)
+      random_key = hk.next_rng_key()
+      nxt_hidden = hk.dropout(random_key, self._dropout_prob, nxt_hidden)
+      nxt_args   = hk.dropout(random_key, self._dropout_prob, nxt_args)
+
 
     if self.use_lstm:
       # lstm doesn't accept multiple batch dimensions (in our case, batch and
@@ -439,7 +448,7 @@ class Net(hk.Module):
         repred=repred,
     )
 
-    return nxt_hidden, output_preds, hint_preds, nxt_lstm_state
+    return nxt_hidden, nxt_args, output_preds, hint_preds, nxt_lstm_state
 
 
 class NetChunked(Net):
