@@ -35,7 +35,7 @@ WANDBINSTANTIATED = False
 
 ALGOS = [
     # 'bellman_ford',
-		# 'bfs',
+		'bfs',
 		# 'activity_selector',
 		# 'articulation_points',
 		# 'binary_search',
@@ -47,7 +47,7 @@ ALGOS = [
 		# 'find_maximum_subarray_kadane',
 		# 'floyd_warshall',
 		# 'graham_scan',
-		 'heapsort',
+		# 'heapsort',
 		# 'insertion_sort',
 		# 'jarvis_march',
 		# 'kmp_matcher',
@@ -546,7 +546,6 @@ def main(args):
           
           wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: validation_accuracy': val_stats['score']})
 
-          new_rng_key, rng_key = jax.random.split(rng_key)
           test_stats = collect_and_eval(
               test_samplers[algo_idx],
               functools.partial(eval_model.predict, algorithm_index=algo_idx),

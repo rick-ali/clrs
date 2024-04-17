@@ -31,6 +31,8 @@ import tensorflow as tf
 
 import jax.numpy as jnp
 
+import wandb
+
 ALGOS = [
 		# 'articulation_points',
 		# 'activity_selector',
@@ -146,7 +148,7 @@ flags.DEFINE_enum('processor_type', 'asynchronous',
 									 'triplet_gpgn', 'triplet_gpgn_mask', 'triplet_gmpnn'],
 									'Processor type to use as the network P.')
 
-flags.DEFINE_list('bases', [None, 2, 10, 5],
+flags.DEFINE_list('bases', [2, 10, 5, None],
 									'Bases for the asynchronous processor')
 
 flags.DEFINE_string('checkpoint_path', './tmp/CLRS30',
@@ -399,30 +401,35 @@ def create_samplers(rng, train_lengths: List[int]):
 
 
 def main(unused_argv):
-	if FLAGS.hint_mode == 'encoded_decoded':
-		encode_hints = True
-		decode_hints = True
-	elif FLAGS.hint_mode == 'decoded_only':
-		encode_hints = False
-		decode_hints = True
-	elif FLAGS.hint_mode == 'none':
-		encode_hints = False
-		decode_hints = False
-	else:
-		raise ValueError('Hint mode not in {encoded_decoded, decoded_only, none}.')
 
-	train_lengths = [int(x) for x in FLAGS.train_lengths]
+	wandb_project = "asynchronous_alignment"
+	wandb_run_name = f"asynch_model_{FLAGS.basis}" if FLAGS.basis is not None else "asynch_model_e"
+	wandbrun = wandb.init(project=wandb_project, name=wandb_run_name)
 
-	rng = np.random.RandomState(FLAGS.seed)
-	rng_key = jax.random.PRNGKey(rng.randint(FLAGS.seed))
-
-	# Create samplers
-	(train_samplers,
-	 val_samplers, val_sample_counts,
-	 test_samplers, test_sample_counts,
-	 spec_list) = create_samplers(rng, train_lengths)
-	
 	for basis in FLAGS.bases:
+
+		if FLAGS.hint_mode == 'encoded_decoded':
+			encode_hints = True
+			decode_hints = True
+		elif FLAGS.hint_mode == 'decoded_only':
+			encode_hints = False
+			decode_hints = True
+		elif FLAGS.hint_mode == 'none':
+			encode_hints = False
+			decode_hints = False
+		else:
+			raise ValueError('Hint mode not in {encoded_decoded, decoded_only, none}.')
+
+		train_lengths = [int(x) for x in FLAGS.train_lengths]
+
+		rng = np.random.RandomState(FLAGS.seed)
+		rng_key = jax.random.PRNGKey(rng.randint(FLAGS.seed))
+
+		# Create samplers
+		(train_samplers,
+		val_samplers, val_sample_counts,
+		test_samplers, test_sample_counts,
+		spec_list) = create_samplers(rng, train_lengths)
 
 		processor_factory = clrs.get_processor_factory(
 				FLAGS.processor_type,
@@ -512,6 +519,8 @@ def main(unused_argv):
 				logging.info('Algo %s step %i current loss %f, current_train_items %i.',
 										FLAGS.algorithms[algo_idx], step,
 										cur_loss, current_train_items[algo_idx])
+				
+				wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: train_loss': cur_loss})
 
 			# Periodically evaluate model
 			if step >= next_eval:
@@ -532,6 +541,16 @@ def main(unused_argv):
 					logging.info('(val) algo %s step %d: %s',
 											FLAGS.algorithms[algo_idx], step, val_stats)
 					val_scores[algo_idx] = val_stats['score']
+					wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: validation_accuracy': val_stats['score']})
+
+					test_stats = collect_and_eval(
+						test_samplers[algo_idx],
+						functools.partial(eval_model.predict, algorithm_index=algo_idx),
+						test_sample_counts[algo_idx],
+						new_rng_key,
+						extras=common_extras)
+					logging.info('(test) algo %s : %s', FLAGS.algorithms[algo_idx], test_stats)
+					wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: test_accuracy': test_stats['score']})
 
 				next_eval += FLAGS.eval_every
 
