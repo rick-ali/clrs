@@ -92,6 +92,7 @@ class AsynchronousNetBase(Processor):
       nb_triplet_fts: int = 8,
       gated: bool = False,
       basis: Optional[float] = None,
+      linear_before_message: bool = False,
       name: str = 'asynchbase',
   ):
     name = 'asynchbase_e' if basis is None else f'asynchbase_{basis}'
@@ -110,6 +111,7 @@ class AsynchronousNetBase(Processor):
     self.nb_triplet_fts = nb_triplet_fts
     self.gated = gated
     self.basis = basis
+    self.linear_before_message = linear_before_message
 
   def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
       self,
@@ -118,6 +120,7 @@ class AsynchronousNetBase(Processor):
       graph_fts: _Array,
       adj_mat: _Array,
       hidden: _Array,
+      node_args: _Array,
       **unused_kwargs,
   ) -> _Array:
     """MPNN inference step."""
@@ -126,38 +129,43 @@ class AsynchronousNetBase(Processor):
     assert graph_fts.shape[:-1] == (b,)
     assert adj_mat.shape == (b, n, n)
 
-    z = jnp.concatenate([node_fts, hidden], axis=-1)
-    m_1 = hk.Linear(self.mid_size) #this is part of psi
-    m_2 = hk.Linear(self.mid_size) #this is part of psi
-    m_e = hk.Linear(self.mid_size) #this is part of psi
-    m_g = hk.Linear(self.mid_size) #this is part of psi
-    # semiring_1 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
-    # semiring_2 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
-    # semiring_e = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
-    # semiring_g = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+    #z = jnp.concatenate([node_fts, hidden], axis=-1)
+    node_fts_layer_1 = hk.Linear(self.mid_size)
+    node_fts_layer_2 = hk.Linear(self.mid_size)
+    m_e = hk.Linear(self.mid_size)
+    m_g = hk.Linear(self.mid_size)
+    semiring_1 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+    semiring_2 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+    tmp = hk.Linear(self.mid_size)
 
-    # o1 = hk.Linear(self.out_size)
-    # o2 = hk.Linear(self.out_size)
+    #! MESSAGE GENERATION
+    if self.linear_before_message:
+      opt_linear_1 = hk.Linear(self.mid_size)
+      opt_linear_2 = hk.Linear(self.mid_size)
+      msg_1 = opt_linear_1(hidden)
+      msg_2 = opt_linear_2(hidden)
 
-    msg_1 = m_1(z)
-    #msg_1 = semiring_1(msg_1) 
-    msg_2 = m_2(z)
-    #msg_2 = semiring_2(msg_2)
+      msg_1 = semiring_1(msg_1)
+      msg_2 = semiring_2(msg_2)
+    
+    else:
+      msg_1 = semiring_1(hidden)
+      msg_2 = semiring_2(hidden)
+
+    m_node_fts_1 = node_fts_layer_1(node_fts)
+    m_node_fts_2 = node_fts_layer_2(node_fts)
+
     msg_e = m_e(edge_fts)
-    #msg_e = semiring_e(msg_e)
     msg_g = m_g(graph_fts)
-    #msg_g = semiring_g(msg_g)
-
-    tri_msgs = None
 
     msgs = (
         jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+        jnp.expand_dims(m_node_fts_1, axis=1) + jnp.expand_dims(m_node_fts_2, axis=2) +
         msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
-    
+    #! ###################################################
 
-    # if self._msgs_mlp_sizes is not None:
-    #   msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
 
+    #! MESSAGE AGGREGATION
     if self.reduction == jnp.mean:
       msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
       msgs = msgs / jnp.sum(adj_mat, axis=-1, keepdims=True)
@@ -168,37 +176,30 @@ class AsynchronousNetBase(Processor):
       msgs = jnp.max(maxarg, axis=1)
     else:
       msgs = self.reduction(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
-    
-    #ret = jnp.concatenate(hidden, msgs, axis=0)
+    #! ###################################################
+
+    #! ARGUMENT GENERATION
+    args = tmp(node_args)
+    #! ###################################################    
+
+    #! STATE UPDATE
     ret = jnp.maximum(hidden, msgs)
-    #h_1 = o1(z)
-    #h_2 = o2(msgs)
+    #! ###################################################
 
-    #ret = h_1 + h_2
-
-    # if self.activation is not None:
-    #   ret = self.activation(ret)
 
     if self.use_ln:
       ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
       ret = ln(ret)
 
-    if self.gated:
-      gate1 = hk.Linear(self.out_size)
-      gate2 = hk.Linear(self.out_size)
-      gate3 = hk.Linear(self.out_size, b_init=hk.initializers.Constant(-3))
-      gate = jax.nn.sigmoid(gate3(jax.nn.relu(gate1(z) + gate2(msgs))))
-      ret = ret * gate + hidden * (1-gate)
-
-    return ret, tri_msgs  # pytype: disable=bad-return-type  # numpy-scalars
+    return ret, args, None  # pytype: disable=bad-return-type  # numpy-scalars
 
 class AsynchronousNet(AsynchronousNetBase):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
 
   def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
-               adj_mat: _Array, hidden: _Array, **unused_kwargs) -> _Array:
+               adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
     adj_mat = jnp.ones_like(adj_mat)
-    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden)
+    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
 
 
 class GAT(Processor):
