@@ -254,7 +254,7 @@ class Net(hk.Module):
 
       nb_mp_steps = max(1, hints[0].data.shape[0] - 1)
       hiddens = jnp.zeros((batch_size, nb_nodes, self.hidden_dim))
-      node_args = jnp.zeros((batch_size, nb_nodes, self.hidden_dim))
+      node_args = jnp.zeros((batch_size, nb_nodes, int(self.hidden_dim/2)))
 
       if self.use_lstm:
         lstm_state = lstm_init(batch_size * nb_nodes)
@@ -401,7 +401,7 @@ class Net(hk.Module):
           raise Exception(f'Failed to process {dp}') from e
 
     # PROCESS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    nxt_hidden = hidden  #! self.decay??
+    nxt_hidden = hidden
     nxt_args = node_args
     for _ in range(self.nb_msg_passing_steps):
       nxt_hidden, nxt_args, nxt_edge = self.processor(
