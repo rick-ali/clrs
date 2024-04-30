@@ -93,9 +93,9 @@ class AsynchronousNetL3Base(Processor):
       gated: bool = False,
       basis: Optional[float] = None,
       linear_preproc: bool = True,
-      name: str = 'asynchbase',
+      name: str = 'AsynchronousL3Net',
   ):
-    name = 'asynchbase_e' if basis is None else f'asynchbase_{basis}'
+    name = 'AsynchronousL3Net'
     super().__init__(name=name)
     if mid_size is None:
       self.mid_size = out_size
@@ -339,7 +339,6 @@ class HeisenbergNetBase(Processor):
       state = ln(state)
 
     return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
-
 class HeisenbergNet(HeisenbergNetBase):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
 
@@ -347,7 +346,6 @@ class HeisenbergNet(HeisenbergNetBase):
                adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
     adj_mat = jnp.ones_like(adj_mat)
     return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
-
 
 class HeisenbergNetBase2d(Processor):
   """Asynchronous Heisenberg net."""
@@ -496,7 +494,6 @@ class HeisenbergNetBase2d(Processor):
       state = ln(state)
 
     return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
-
 class HeisenbergNet2d(HeisenbergNetBase2d):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
 
