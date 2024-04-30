@@ -76,7 +76,7 @@ class Processor(hk.Module):
     return False
 
 
-class AsynchronousNetBase(Processor):
+class AsynchronousNetL3Base(Processor):
   """Asynchronous L3 net."""
 
   def __init__(
@@ -92,10 +92,130 @@ class AsynchronousNetBase(Processor):
       nb_triplet_fts: int = 8,
       gated: bool = False,
       basis: Optional[float] = None,
-      linear_before_message: bool = False,
+      linear_preproc: bool = True,
       name: str = 'asynchbase',
   ):
     name = 'asynchbase_e' if basis is None else f'asynchbase_{basis}'
+    super().__init__(name=name)
+    if mid_size is None:
+      self.mid_size = out_size
+    else:
+      self.mid_size = mid_size
+    self.out_size = out_size
+    self.mid_act = mid_act
+    self.activation = activation
+    self.reduction = reduction
+    self._msgs_mlp_sizes = msgs_mlp_sizes
+    self.use_ln = use_ln
+    self.use_triplets = use_triplets
+    self.nb_triplet_fts = nb_triplet_fts
+    self.gated = gated
+    self.basis = basis
+    self.linear_preproc = linear_preproc
+
+  def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+      self,
+      node_fts: _Array,
+      edge_fts: _Array,
+      graph_fts: _Array,
+      adj_mat: _Array,
+      hidden: _Array,
+      node_args: _Array,
+      **unused_kwargs,
+  ) -> _Array:
+    """MPNN inference step."""
+    b, n, _ = node_fts.shape
+    assert edge_fts.shape[:-1] == (b, n, n)
+    assert graph_fts.shape[:-1] == (b,)
+    assert adj_mat.shape == (b, n, n)
+
+    #z = jnp.concatenate([node_fts, hidden], axis=-1)
+    node_fts_layer_1 = hk.Linear(self.mid_size)
+    node_fts_layer_2 = hk.Linear(self.mid_size)
+    m_e = hk.Linear(self.mid_size)
+    m_g = hk.Linear(self.mid_size)
+    semiring_1 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+    semiring_2 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
+
+    if self.linear_preproc:
+      opt_linear_1 = hk.Linear(self.mid_size)
+      opt_linear_2 = hk.Linear(self.mid_size)
+
+    def psi(args_receivers, args_senders, node_fts_senders, node_fts_receivers, edge_fts, graph_fts):
+      if self.linear_preproc:
+        msg_1 = opt_linear_1(args_receivers)
+        msg_2 = opt_linear_2(args_senders)
+
+        msg_1 = semiring_1(msg_1)
+        msg_2 = semiring_2(msg_2)
+    
+      else:
+        msg_1 = semiring_1(args_receivers)
+        msg_2 = semiring_2(args_senders)
+
+      m_node_fts_1 = node_fts_layer_1(node_fts_senders)
+      m_node_fts_2 = node_fts_layer_2(node_fts_receivers)
+
+      msg_e = m_e(edge_fts)
+      msg_g = m_g(graph_fts)
+
+      msgs = (
+          jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+          jnp.expand_dims(m_node_fts_1, axis=1) + jnp.expand_dims(m_node_fts_2, axis=2) +
+          msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
+      
+      return msgs
+
+    def message_reduction(msgs, adj_mat):
+      maxarg = jnp.where(jnp.expand_dims(adj_mat, -1),
+                         msgs,
+                         -BIG_NUMBER)
+      msgs = jnp.max(maxarg, axis=1)
+      return msgs
+  
+    def phi(state, msgs):
+      return jnp.maximum(state, msgs)
+    
+    msgs = psi(hidden, hidden, node_fts, node_fts, edge_fts, graph_fts)
+    msgs = message_reduction(msgs, adj_mat)
+    ret = phi(hidden, msgs)
+
+    if self.use_ln:
+      ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+      ret = ln(ret)
+
+    args = None
+    return ret, args, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+class AsynchronousNetL3(AsynchronousNetL3Base):
+  """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
+
+  def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
+               adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
+    adj_mat = jnp.ones_like(adj_mat)
+    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
+
+
+class HeisenbergNetBase(Processor):
+  """Asynchronous Heisenberg net."""
+
+  def __init__(
+      self,
+      out_size: int,
+      mid_size: Optional[int] = None,
+      mid_act: Optional[_Fn] = None,
+      activation: Optional[_Fn] = jax.nn.relu,
+      reduction: _Fn = jnp.max,
+      msgs_mlp_sizes: Optional[List[int]] = None,
+      use_ln: bool = False,
+      use_triplets: bool = False,
+      nb_triplet_fts: int = 8,
+      gated: bool = False,
+      basis: Optional[float] = None,
+      linear_before_message: bool = False,
+      name: str = 'HeisenbergNet3D',
+  ):
+    name = 'HeisenbergNet3D'
     super().__init__(name=name)
     if mid_size is None:
       self.mid_size = out_size
@@ -125,74 +245,259 @@ class AsynchronousNetBase(Processor):
   ) -> _Array:
     """MPNN inference step."""
     b, n, _ = node_fts.shape
+    self.b = b
+    self.n = n
     assert edge_fts.shape[:-1] == (b, n, n)
     assert graph_fts.shape[:-1] == (b,)
     assert adj_mat.shape == (b, n, n)
-
-    #z = jnp.concatenate([node_fts, hidden], axis=-1)
-    node_fts_layer_1 = hk.Linear(self.mid_size)
-    node_fts_layer_2 = hk.Linear(self.mid_size)
-    m_e = hk.Linear(self.mid_size)
-    m_g = hk.Linear(self.mid_size)
-    semiring_1 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
-    semiring_2 = SemiringLayer(self.mid_size, basis=self.basis, with_bias=False)
-
-    #! MESSAGE GENERATION
-    if self.linear_before_message:
-      opt_linear_1 = hk.Linear(self.mid_size)
-      opt_linear_2 = hk.Linear(self.mid_size)
-      msg_1 = opt_linear_1(hidden)
-      msg_2 = opt_linear_2(hidden)
-
-      msg_1 = semiring_1(msg_1)
-      msg_2 = semiring_2(msg_2)
+    assert self.out_size % 2 == 0
     
-    else:
-      msg_1 = semiring_1(hidden)
-      msg_2 = semiring_2(hidden)
+    self.N = int(self.out_size / 2)
+    # message_dim = 3*N
+    # state_dim = 2*N = hidden_dim
+    # args_dim = N
+    z_args = jnp.concatenate([node_fts, node_args], axis=-1)
+    node_fts_layer_1 = hk.Linear(3*self.N)
+    node_fts_layer_2 = hk.Linear(3*self.N)
+    m_1 = hk.Linear(3*self.N)
+    m_2 = hk.Linear(3*self.N)
+    m_e = hk.Linear(3*self.N)
+    m_g = hk.Linear(3*self.N)
 
-    m_node_fts_1 = node_fts_layer_1(node_fts)
-    m_node_fts_2 = node_fts_layer_2(node_fts)
+    f = hk.Linear(self.N)
 
-    msg_e = m_e(edge_fts)
-    msg_g = m_g(graph_fts)
+    def psi(args_receivers, args_senders, edge_fts, graph_fts):
+      msg_e = m_e(edge_fts)
+      msg_g = m_g(graph_fts)
 
-    msgs = (
-        jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
-        jnp.expand_dims(m_node_fts_1, axis=1) + jnp.expand_dims(m_node_fts_2, axis=2) +
-        msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
-    #! ###################################################
+      msg_1 = m_1(args_receivers)
+      msg_2 = m_2(args_senders)
 
+      msgs = (
+          jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+          msg_e + jnp.expand_dims(msg_g, axis=(1, 2))
+      )
+      return msgs
+    
+    def message_reduction(msgs, adj_mat):
+      msgs = msgs * jnp.expand_dims(adj_mat, -1)
+      temp = msgs.reshape(self.b, self.n, self.n, self.N, 3)
 
-    #! MESSAGE AGGREGATION
-    if self.reduction == jnp.mean:
-      msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
-      msgs = msgs / jnp.sum(adj_mat, axis=-1, keepdims=True)
-    elif self.reduction == jnp.max:
+      msgs_ = jnp.zeros((self.b, self.n, self.n, self.N, 3, 3))
+      msgs_ = msgs_.at[..., 0, 1].set(temp[...,0]) # a
+      msgs_ = msgs_.at[..., 0, 2].set(temp[...,2]) # c
+      msgs_ = msgs_.at[..., 1, 2].set(temp[...,1]) # b
+      msgs_ = msgs_.at[..., 0, 0].set(1)
+      msgs_ = msgs_.at[..., 1, 1].set(1)
+      msgs_ = msgs_.at[..., 2, 2].set(1)
+      msgs_ = jnp.einsum('ma...ij -> m...ij', msgs_)
+      res_  = jnp.zeros((self.b, self.n, self.N, 3))
+      res_ = res_.at[..., 0].set(msgs_[..., 0, 1]) # a
+      res_ = res_.at[..., 2].set(msgs_[..., 1, 2]) # c
+      res_ = res_.at[..., 1].set(msgs_[..., 0, 2]) # b
+      return res_.reshape((self.b, self.n, 3*self.N)) 
+
+    def max_message_reduction(msgs, adj_mat):
       maxarg = jnp.where(jnp.expand_dims(adj_mat, -1),
                          msgs,
                          -BIG_NUMBER)
       msgs = jnp.max(maxarg, axis=1)
-    else:
-      msgs = self.reduction(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
-    #! ###################################################
+      return msgs
 
-    #! ARGUMENT GENERATION
-    args = None
-    #! ###################################################    
+    def phi(state, msgs):
+      first_index  = jnp.arange(0, msgs.shape[-1], 3)
+      second_index = jnp.arange(1, msgs.shape[-1], 3)
+      _msgs1 = msgs[..., first_index]
+      _msgs2 = msgs[..., second_index]
+      _msgs3 = jnp.concatenate((jnp.expand_dims(_msgs1, axis=-1), jnp.expand_dims(_msgs2, axis=-1)), axis=-1)
+      _msgs  = _msgs3.flatten(order='C').reshape(self.b, self.n, 2*self.N)
+      state = _msgs + hidden
+      return state
+    
+    def delta(msgs, hidden, hidden_acted_on, f):
+      Delta_f = jax.nn.relu(f(jnp.concatenate([node_fts, state], axis=-1))) - jax.nn.relu(f(jnp.concatenate([node_fts, hidden_acted_on], axis=-1)))  # f(state) = f(phi(msgs, hidden))
+      first_index = jnp.arange(0, msgs.shape[-1], 3)
+      third_index = jnp.arange(2, msgs.shape[-1], 3)
 
-    #! STATE UPDATE
-    ret = jnp.maximum(hidden, msgs)
-    #! ###################################################
+      _msgs1 = msgs[..., first_index]
+      _msgs2 = msgs[..., third_index]
 
+      odd_index = jnp.arange(1, hidden.shape[-1], 2)
+      _hidden2 = hidden[..., odd_index]
+      
+      _hidden = _msgs1 * _hidden2
+
+      return _hidden + _msgs2 + Delta_f
+
+    msgs = psi(z_args, z_args, edge_fts, graph_fts)
+    msgs = message_reduction(msgs, adj_mat)
+    state = phi(hidden, msgs)
+    node_args = delta(msgs, hidden, state, f)
 
     if self.use_ln:
       ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-      ret = ln(ret)
+      state = ln(state)
 
-    return ret, args, None  # pytype: disable=bad-return-type  # numpy-scalars
+    return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
 
-class AsynchronousNet(AsynchronousNetBase):
+class HeisenbergNet(HeisenbergNetBase):
+  """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
+
+  def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
+               adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
+    adj_mat = jnp.ones_like(adj_mat)
+    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
+
+
+class HeisenbergNetBase2d(Processor):
+  """Asynchronous Heisenberg net."""
+
+  def __init__(
+      self,
+      out_size: int,
+      mid_size: Optional[int] = None,
+      mid_act: Optional[_Fn] = None,
+      activation: Optional[_Fn] = jax.nn.relu,
+      reduction: _Fn = jnp.max,
+      msgs_mlp_sizes: Optional[List[int]] = None,
+      use_ln: bool = False,
+      use_triplets: bool = False,
+      nb_triplet_fts: int = 8,
+      gated: bool = False,
+      basis: Optional[float] = None,
+      linear_before_message: bool = False,
+      name: str = 'HeisenbergNet2D',
+  ):
+    name = 'HeisenbergNet2D'
+    super().__init__(name=name)
+    if mid_size is None:
+      self.mid_size = out_size
+    else:
+      self.mid_size = mid_size
+    self.out_size = out_size
+    self.mid_act = mid_act
+    self.activation = activation
+    self.reduction = reduction
+    self._msgs_mlp_sizes = msgs_mlp_sizes
+    self.use_ln = use_ln
+    self.use_triplets = use_triplets
+    self.nb_triplet_fts = nb_triplet_fts
+    self.gated = gated
+    self.basis = basis
+    self.linear_before_message = linear_before_message
+
+  def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+      self,
+      node_fts: _Array,
+      edge_fts: _Array,
+      graph_fts: _Array,
+      adj_mat: _Array,
+      hidden: _Array,
+      node_args: _Array,
+      **unused_kwargs,
+  ) -> _Array:
+    """MPNN inference step."""
+    b, n, _ = node_fts.shape
+    self.b = b
+    self.n = n
+    assert edge_fts.shape[:-1] == (b, n, n)
+    assert graph_fts.shape[:-1] == (b,)
+    assert adj_mat.shape == (b, n, n)
+    assert self.out_size % 2 == 0
+    
+    self.N = int(self.out_size / 2)
+    # message_dim = 2*N
+    # state_dim = 2*N
+    # args_dim = N
+    #z_msgs = jnp.concatenate([node_fts, hidden], axis=-1)
+    z_args = jnp.concatenate([node_fts, node_args], axis=-1)
+    node_fts_layer_1 = hk.Linear(2*self.N)
+    node_fts_layer_2 = hk.Linear(2*self.N)
+    m_1 = hk.Linear(2*self.N)
+    m_2 = hk.Linear(2*self.N)
+    m_e = hk.Linear(2*self.N)
+    m_g = hk.Linear(2*self.N)
+
+    f = hk.Linear(self.N)
+
+    def psi(args_receivers, args_senders, node_fts_receivers, node_fts_senders, edge_fts, graph_fts):
+      #msg_1_input = node_fts_layer_1(node_fts_receivers)
+      #msg_2_input = node_fts_layer_2(node_fts_senders)
+      msg_e = m_e(edge_fts)
+      msg_g = m_g(graph_fts)
+
+      msg_1 = m_1(args_receivers)
+      msg_2 = m_2(args_senders)
+
+      msgs = (
+          jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+          #jnp.expand_dims(msg_1_input, axis=1) + jnp.expand_dims(msg_2_input, axis=2) +
+          msg_e + jnp.expand_dims(msg_g, axis=(1, 2))
+      )
+      return msgs
+    
+    def message_reduction(msgs, adj_mat):
+      msgs = msgs * jnp.expand_dims(adj_mat, -1)
+      even_indices = jnp.arange(0, msgs.shape[-1], 2)
+      odd_indices = jnp.arange(1, msgs.shape[-1], 2)
+      msgs_1 = msgs[...,even_indices]
+      msgs_2 = msgs[...,odd_indices]
+      msgs_3 = jnp.concatenate((jnp.expand_dims(msgs_1, axis=-1), 
+                                jnp.expand_dims(msgs_1, axis=-1),
+                                jnp.expand_dims(msgs_2, axis=-1)
+                                ), axis=-1)
+      msgs_3  = msgs_3.flatten(order='C').reshape(self.b, self.n, self.n, 3*self.N)
+
+      temp = msgs_3.reshape(self.b, self.n, self.n, self.N, 3)
+
+      msgs_ = jnp.zeros((self.b, self.n, self.n, self.N, 3, 3))
+      msgs_ = msgs_.at[..., 0, 1].set(temp[...,0])
+      msgs_ = msgs_.at[..., 0, 2].set(temp[...,2])
+      msgs_ = msgs_.at[..., 1, 2].set(temp[...,1])
+      msgs_ = msgs_.at[..., 0, 0].set(1)
+      msgs_ = msgs_.at[..., 1, 1].set(1)
+      msgs_ = msgs_.at[..., 2, 2].set(1)
+      msgs_ = jnp.einsum('ma...ij -> m...ij', msgs_)
+      res_  = jnp.zeros((self.b, self.n, self.N, 2))
+      res_ = res_.at[..., 0].set(msgs_[..., 0, 1]) # a
+      #res_ = res_.at[..., 1].set(msgs_[..., 1, 2]) # b
+      res_ = res_.at[..., 1].set(msgs_[..., 0, 2]) # c this 1 was a 2
+      return res_.reshape((self.b, self.n, 2*self.N))
+      
+    def phi(state, msgs):
+      even_indices = jnp.arange(0, msgs.shape[-1], 2)
+      _msgs1 = msgs[..., even_indices]
+      _msgs2 = jnp.concatenate((jnp.expand_dims(_msgs1, axis=-1), jnp.expand_dims(_msgs1, axis=-1)), axis=-1)
+      _msgs  = _msgs2.flatten(order='C').reshape(self.b, self.n, 2*self.N)
+      state = _msgs + hidden
+      return state
+    
+    def delta(msgs, hidden, hidden_acted_on, f):
+      Delta_f = jax.nn.relu(f(state)) - jax.nn.relu(f(hidden_acted_on))  # f(state) = f(phi(msgs, hidden))
+      even_indices = jnp.arange(0, msgs.shape[-1], 2)
+      odd_indices  = jnp.arange(1, msgs.shape[-1], 2)
+
+      _msgs1 = msgs[..., even_indices]
+      _msgs2 = msgs[..., odd_indices]
+
+      _hidden2 = hidden[..., odd_indices]
+      
+      _hidden = _msgs1 * _hidden2
+
+      return _hidden + _msgs2 + Delta_f
+
+    msgs = psi(z_args, z_args, node_fts, node_fts, edge_fts, graph_fts)
+    msgs = message_reduction(msgs, adj_mat)
+    state = phi(hidden, msgs)
+    node_args = delta(msgs, hidden, state, f)
+
+    if self.use_ln:
+      ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+      state = ln(state)
+
+    return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+class HeisenbergNet2d(HeisenbergNetBase2d):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
 
   def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
@@ -811,7 +1116,8 @@ def get_processor_factory(kind: str,
                           use_ln: bool,
                           nb_triplet_fts: int,
                           nb_heads: Optional[int] = None,
-                          basis: Optional[float] = None) -> ProcessorFactory:
+                          basis: Optional[float] = None,
+                          linear_preproc: Optional[bool] = False) -> ProcessorFactory:
   """Returns a processor factory.
 
   Args:
@@ -833,7 +1139,17 @@ def get_processor_factory(kind: str,
           nb_triplet_fts=0
       )
     elif kind == 'asynchronous':
-      processor = AsynchronousNet(
+      processor = AsynchronousNetL3(
+          out_size=out_size,
+          msgs_mlp_sizes=[out_size, out_size],
+          use_ln=use_ln,
+          use_triplets=False,
+          nb_triplet_fts=0,
+          basis=basis,
+          linear_preproc=linear_preproc
+      )
+    elif kind == 'heisenberg':
+      processor = HeisenbergNet(
           out_size=out_size,
           msgs_mlp_sizes=[out_size, out_size],
           use_ln=use_ln,

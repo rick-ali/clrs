@@ -141,10 +141,12 @@ flags.DEFINE_enum('encoder_init', 'xavier_on_scalars',
                   ['default', 'xavier_on_scalars'],
                   'Initialiser to use for the encoders.')
 flags.DEFINE_enum('processor_type', 'asynchronous',
-                  ['asynchronous'],
+                  ['asynchronous', 'heisenberg'],
                   'Processor type to use as the network P.')
 flags.DEFINE_float('basis', None,
                    'Basis for the asynchronous processor')
+flags.DEFINE_bool('linear_preproc', True,
+                  'Whether to activate a linear layer before the semiring layer')
 
 flags.DEFINE_string('checkpoint_path', './tmp/CLRS30',
                     'Path in which checkpoints are saved.')
@@ -399,7 +401,7 @@ def main(args):
 
   wandb_project = "asynchronous_alignment"
   wandb_run_name = f"asynch_model_{FLAGS.basis}" if FLAGS.basis is not None else "asynch_model_e"
-  wandbrun = wandb.init(project=wandb_project, name=wandb_run_name)
+  wandbrun = wandb.init(project=wandb_project, name=wandb_run_name, mode="disabled")
 
   global ALGOS
 
@@ -438,7 +440,8 @@ def main(args):
         use_ln=FLAGS.use_ln,
         nb_triplet_fts=FLAGS.nb_triplet_fts,
         nb_heads=FLAGS.nb_heads,
-        basis=FLAGS.basis
+        basis=FLAGS.basis,
+        linear_preproc=FLAGS.linear_preproc
     )
     model_params = dict(
         processor_factory=processor_factory,
