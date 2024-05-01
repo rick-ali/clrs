@@ -76,6 +76,127 @@ class Processor(hk.Module):
     return False
 
 
+class DeltaTestNetBase(Processor):
+  """Delta Test Net."""
+
+  def __init__(
+      self,
+      out_size: int,
+      mid_size: Optional[int] = None,
+      mid_act: Optional[_Fn] = None,
+      activation: Optional[_Fn] = jax.nn.relu,
+      reduction: _Fn = jnp.max,
+      msgs_mlp_sizes: Optional[List[int]] = None,
+      use_ln: bool = False,
+      use_triplets: bool = False,
+      nb_triplet_fts: int = 8,
+      gated: bool = False,
+      basis: Optional[float] = None,
+      linear_preproc: bool = True,
+      f_depth: int = 1,
+      f_width: Optional[int] = None,
+      name: str = 'DeltaTestNet',
+  ):
+    name = 'DeltaTestNet'
+    super().__init__(name=name)
+    if mid_size is None:
+      self.mid_size = out_size
+    else:
+      self.mid_size = mid_size
+    self.out_size = out_size
+    self.mid_act = mid_act
+    self.activation = activation
+    self.reduction = reduction
+    self._msgs_mlp_sizes = msgs_mlp_sizes
+    self.use_ln = use_ln
+    self.use_triplets = use_triplets
+    self.nb_triplet_fts = nb_triplet_fts
+    self.gated = gated
+    self.basis = basis
+    self.linear_preproc = linear_preproc
+    self.f_depth = f_depth
+    if f_width is None:
+      self.f_width = self.mid_size
+    else:
+      self.f_width = f_width
+
+  def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+      self,
+      node_fts: _Array,
+      edge_fts: _Array,
+      graph_fts: _Array,
+      adj_mat: _Array,
+      hidden: _Array,
+      node_args: _Array,
+      **unused_kwargs,
+  ) -> _Array:
+    """MPNN inference step."""
+    b, n, _ = node_fts.shape
+    assert edge_fts.shape[:-1] == (b, n, n)
+    assert graph_fts.shape[:-1] == (b,)
+    assert adj_mat.shape == (b, n, n)
+
+    z = jnp.concatenate([node_fts, hidden], axis=-1)
+  
+    m_1 = hk.Linear(self.mid_size)
+    m_2 = hk.Linear(self.mid_size)
+    m_e = hk.Linear(self.mid_size)
+    m_g = hk.Linear(self.mid_size)
+
+    layers = []
+    for _ in range(self.f_depth):
+      layers.append(hk.Linear(self.f_width))
+      layers.append(jax.nn.relu)
+
+    f = hk.Sequential(layers)
+
+    def psi(args_receivers, args_senders, edge_fts, graph_fts):
+      msg_1 = m_1(args_receivers)
+      msg_2 = m_2(args_senders)
+      msg_e = m_e(edge_fts)
+      msg_g = m_g(graph_fts)
+
+      msgs = (
+          jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+          msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
+      
+      return msgs
+
+    def message_reduction(msgs, adj_mat):
+      msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
+      msgs = msgs / jnp.sum(adj_mat, axis=-1, keepdims=True)
+      return msgs
+  
+    def phi(state, msgs):
+      #return jnp.maximum(state, msgs)
+      return state + msgs
+    
+    def delta(hidden, hidden_acted_on, f):
+      Delta_f = f(jax.nn.relu(hidden)) - f(jax.nn.relu(hidden_acted_on))
+
+      return Delta_f
+
+    msgs = psi(z, z, edge_fts, graph_fts)
+    msgs = message_reduction(msgs, adj_mat)
+    state = phi(hidden, msgs)
+    node_args = delta(hidden, state, f)
+
+    if self.use_ln:
+      ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+      state = ln(state)
+
+    return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+class DeltaTestNet(DeltaTestNetBase):
+  """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
+
+  def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
+               adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
+    adj_mat = jnp.ones_like(adj_mat)
+    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
+
+
+
 class AsynchronousNetL3Base(Processor):
   """Asynchronous L3 net."""
 
@@ -178,14 +299,14 @@ class AsynchronousNetL3Base(Processor):
     
     msgs = psi(z, z, edge_fts, graph_fts)
     msgs = message_reduction(msgs, adj_mat)
-    ret = phi(hidden, msgs)
+    state = phi(hidden, msgs)
 
     if self.use_ln:
       ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-      ret = ln(ret)
+      state = ln(state)
 
     args = None
-    return ret, args, None  # pytype: disable=bad-return-type  # numpy-scalars
+    return state, args, None  # pytype: disable=bad-return-type  # numpy-scalars
 
 class AsynchronousNetL3(AsynchronousNetL3Base):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
@@ -1142,7 +1263,9 @@ def get_processor_factory(kind: str,
                           nb_triplet_fts: int,
                           nb_heads: Optional[int] = None,
                           basis: Optional[float] = None,
-                          linear_preproc: Optional[bool] = False) -> ProcessorFactory:
+                          linear_preproc: Optional[bool] = False,
+                          f_depth: Optional[int] = 1,
+                          f_width: Optional[int] = None) -> ProcessorFactory:
   """Returns a processor factory.
 
   Args:
@@ -1181,6 +1304,17 @@ def get_processor_factory(kind: str,
           use_triplets=False,
           nb_triplet_fts=0,
           basis=basis
+      )
+    elif kind == 'deltatest':
+      processor = DeltaTestNet(
+          out_size=out_size,
+          msgs_mlp_sizes=[out_size, out_size],
+          use_ln=use_ln,
+          use_triplets=False,
+          nb_triplet_fts=0,
+          basis=basis,
+          f_depth=f_depth,
+          f_width=f_width
       )
     elif kind == 'gat':
       processor = GAT(

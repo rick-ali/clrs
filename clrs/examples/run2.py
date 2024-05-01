@@ -140,13 +140,17 @@ flags.DEFINE_integer('nb_triplet_fts', 8,
 flags.DEFINE_enum('encoder_init', 'xavier_on_scalars',
                   ['default', 'xavier_on_scalars'],
                   'Initialiser to use for the encoders.')
-flags.DEFINE_enum('processor_type', 'asynchronous',
-                  ['asynchronous', 'heisenberg'],
+flags.DEFINE_enum('processor_type', 'deltatest',
+                  ['asynchronous', 'heisenberg', 'deltatest'],
                   'Processor type to use as the network P.')
-flags.DEFINE_float('basis', None,
+flags.DEFINE_float('basis', 2.0,
                    'Basis for the asynchronous processor')
 flags.DEFINE_bool('linear_preproc', True,
                   'Whether to activate a linear layer before the semiring layer')
+flags.DEFINE_integer('f_depth', 1,
+                     'Depth of the argument generation function')
+flags.DEFINE_integer('f_width', None,
+                     'Width of the argument generation function. If None, it\'s the same as hidden')
 
 flags.DEFINE_string('checkpoint_path', './tmp/CLRS30',
                     'Path in which checkpoints are saved.')
@@ -398,6 +402,10 @@ def create_samplers(rng, train_lengths: List[int]):
 
 
 def main(args):
+  print(f"Architecture: {FLAGS.processor_type}")
+  print(f"Basis: {FLAGS.basis}")
+  print(f"f Depth: {FLAGS.f_depth}")
+  print(f"f Width: {FLAGS.f_width}")
 
   wandb_project = "asynchronous_alignment"
   wandb_run_name = f"asynch_model_{FLAGS.basis}" if FLAGS.basis is not None else "asynch_model_e"
@@ -441,7 +449,9 @@ def main(args):
         nb_triplet_fts=FLAGS.nb_triplet_fts,
         nb_heads=FLAGS.nb_heads,
         basis=FLAGS.basis,
-        linear_preproc=FLAGS.linear_preproc
+        linear_preproc=FLAGS.linear_preproc,
+        f_depth = FLAGS.f_depth,
+        f_width = FLAGS.f_width
     )
     model_params = dict(
         processor_factory=processor_factory,
