@@ -91,7 +91,7 @@ flags.DEFINE_boolean('chunked_training', False,
 flags.DEFINE_integer('chunk_length', 16,
                      'Time chunk length used for training (if '
                      '`chunked_training` is True.')
-flags.DEFINE_integer('train_steps', 2, 'Number of training iterations.')
+flags.DEFINE_integer('train_steps', 10000, 'Number of training iterations.')
 flags.DEFINE_integer('eval_every', 50, 'Evaluation frequency (in steps).')
 flags.DEFINE_integer('test_every', 500, 'Evaluation frequency (in steps).')
 
@@ -539,7 +539,7 @@ def main(args):
                       FLAGS.algorithms[algo_idx], step,
                       cur_loss, current_train_items[algo_idx])
           
-          wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.depth}: train_loss': cur_loss})
+          wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.f_depth}: train_loss': cur_loss})
 
         # Periodically evaluate model
         if step >= next_eval:
@@ -561,7 +561,7 @@ def main(args):
                         FLAGS.algorithms[algo_idx], step, val_stats)
             val_scores[algo_idx] = val_stats['score']
             
-            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.depth}: validation_accuracy': val_stats['score']})
+            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.f_depth}: validation_accuracy': val_stats['score']})
 
             test_stats = collect_and_eval(
                 test_samplers[algo_idx],
@@ -570,7 +570,7 @@ def main(args):
                 new_rng_key,
                 extras=common_extras)
             logging.info('(test) algo %s : %s', FLAGS.algorithms[algo_idx], test_stats)
-            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.depth}: test_accuracy': test_stats['score']})
+            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.f_depth}: test_accuracy': test_stats['score']})
 
           next_eval += FLAGS.eval_every
 
