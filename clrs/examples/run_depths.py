@@ -539,7 +539,7 @@ def main(args):
                       FLAGS.algorithms[algo_idx], step,
                       cur_loss, current_train_items[algo_idx])
           
-          wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: train_loss': cur_loss})
+          wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.depth}: train_loss': cur_loss})
 
         # Periodically evaluate model
         if step >= next_eval:
@@ -561,7 +561,7 @@ def main(args):
                         FLAGS.algorithms[algo_idx], step, val_stats)
             val_scores[algo_idx] = val_stats['score']
             
-            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: validation_accuracy': val_stats['score']})
+            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.depth}: validation_accuracy': val_stats['score']})
 
             test_stats = collect_and_eval(
                 test_samplers[algo_idx],
@@ -570,7 +570,7 @@ def main(args):
                 new_rng_key,
                 extras=common_extras)
             logging.info('(test) algo %s : %s', FLAGS.algorithms[algo_idx], test_stats)
-            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: test_accuracy': test_stats['score']})
+            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}, depth={FLAGS.depth}: test_accuracy': test_stats['score']})
 
           next_eval += FLAGS.eval_every
 
