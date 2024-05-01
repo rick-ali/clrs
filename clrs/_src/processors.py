@@ -944,6 +944,7 @@ class PGN(Processor):
       graph_fts: _Array,
       adj_mat: _Array,
       hidden: _Array,
+      node_args: _Array,
       **unused_kwargs,
   ) -> _Array:
     """MPNN inference step."""
@@ -1025,7 +1026,7 @@ class PGN(Processor):
       gate = jax.nn.sigmoid(gate3(jax.nn.relu(gate1(z) + gate2(msgs))))
       ret = ret * gate + hidden * (1-gate)
 
-    return ret, tri_msgs  # pytype: disable=bad-return-type  # numpy-scalars
+    return ret, None, tri_msgs  # pytype: disable=bad-return-type  # numpy-scalars
 
 
 class DeepSets(PGN):
@@ -1042,9 +1043,9 @@ class MPNN(PGN):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
 
   def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
-               adj_mat: _Array, hidden: _Array, **unused_kwargs) -> _Array:
+               adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
     adj_mat = jnp.ones_like(adj_mat)
-    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden)
+    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
 
 
 class PGNMask(PGN):
@@ -1359,6 +1360,7 @@ def get_processor_factory(kind: str,
           use_ln=use_ln,
           use_triplets=False,
           nb_triplet_fts=0,
+          reduction=jnp.mean
       )
     elif kind == 'pgn':
       processor = PGN(
