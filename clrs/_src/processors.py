@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
-from clrs._src.layers import SemiringLayer
+from clrs._src.layers import SemiringLayer, OtherSideLinear
 
 
 _Array = chex.Array
@@ -74,6 +74,164 @@ class Processor(hk.Module):
   @property
   def inf_bias_edge(self):
     return False
+
+
+class SheafNetBase(Processor):
+  """Delta Test Net."""
+
+  def __init__(
+      self,
+      out_size: int,
+      mid_size: Optional[int] = None,
+      mid_act: Optional[_Fn] = None,
+      activation: Optional[_Fn] = jax.nn.relu,
+      reduction: _Fn = jnp.max,
+      msgs_mlp_sizes: Optional[List[int]] = None,
+      use_ln: bool = False,
+      use_triplets: bool = False,
+      nb_triplet_fts: int = 8,
+      gated: bool = False,
+      basis: Optional[float] = None,
+      linear_preproc: bool = True,
+      f_depth: int = 1,
+      f_width: Optional[int] = None,
+      stalk_dim = 3,
+      name: str = 'SheafNet',
+  ):
+    name = 'SheafNet'
+    super().__init__(name=name)
+    assert out_size % stalk_dim == 0
+    self.out_size = int(out_size / stalk_dim)
+    if mid_size is None:
+      self.mid_size = self.out_size
+    else:
+      self.mid_size = mid_size
+    
+    self.mid_act = mid_act
+    self.activation = activation
+    self.reduction = reduction
+    self._msgs_mlp_sizes = msgs_mlp_sizes
+    self.use_ln = use_ln
+    self.use_triplets = use_triplets
+    self.nb_triplet_fts = nb_triplet_fts
+    self.gated = gated
+    self.basis = basis
+    self.linear_preproc = linear_preproc
+    self.stalk_dim = stalk_dim
+    self.f_depth = f_depth
+    if f_width is None:
+      self.f_width = self.mid_size
+    else:
+      self.f_width = f_width
+
+  def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+      self,
+      node_fts: _Array,
+      edge_fts: _Array,
+      graph_fts: _Array,
+      adj_mat: _Array,
+      hidden: _Array,
+      node_args: _Array,
+      **unused_kwargs,
+  ) -> _Array:
+    """MPNN inference step."""
+    b, n, _ = node_fts.shape
+    self.b = b
+    self.n = n
+    assert edge_fts.shape[:-1] == (b, n, n)
+    assert graph_fts.shape[:-1] == (b,)
+    assert adj_mat.shape == (b, n, n)
+
+    z = jnp.concatenate([node_fts, hidden], axis=-1)
+
+    #sheaf_encoding = hk.Linear(self.mid_size * self.stalk_dim)
+    #z = sheaf_encoding(z).reshape(self.b, self.n, self.mid_size, self.stalk_dim)
+    z = z.reshape(self.b, self.n, self.mid_size*2, self.stalk_dim)
+
+    left_weights  = hk.Linear(self.stalk_dim)
+    right_weights = hk.Linear(self.mid_size)
+
+    restriction_map = hk.Linear(self.stalk_dim ** 2)
+
+    #m_1 = hk.Linear(self.mid_size)
+    #m_2 = hk.Linear(self.mid_size)
+    m_e = hk.Linear(self.mid_size * self.stalk_dim)
+    m_g = hk.Linear(self.mid_size * self.stalk_dim)
+
+
+    def psi(args_receivers, args_senders, edge_fts, graph_fts):
+      #msg_args_senders = jnp.einsum('...ij -> ...ji', args_senders)  # swap hidden with sheaf dimension
+      msg_args_senders = left_weights(args_senders)
+      msg_args_senders = jnp.einsum('...ij -> ...ji', msg_args_senders)
+      msg_args_senders = right_weights(msg_args_senders)
+
+      msg_e = m_e(edge_fts)#.reshape(self.b, self.n, self.stalk_dim, self.mid_size)
+      msg_g = m_g(graph_fts)#.reshape(self.b, self.n, self.stalk_dim, self.mid_size)
+
+      #msg_args_senders = msg_args_senders + msg_e + msg_g
+
+      
+      u_v_concat = jnp.concatenate([args_receivers, args_senders], axis=-1).reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2 * 2) # *2 because there are 2 arrs and *2 because args_senders is also a concatenation
+      v_u_concat = jnp.concatenate([args_senders, args_receivers], axis=-2).reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2 * 2)
+      F_u_e = restriction_map(u_v_concat).reshape(self.b, self.n, self.stalk_dim, self.stalk_dim)
+      F_v_e = restriction_map(v_u_concat).reshape(self.b, self.n, self.stalk_dim, self.stalk_dim)
+      F_v_e_t = jnp.einsum('...ij -> ...ji', F_v_e)
+
+      #u_u_concat = jnp.concatenate([args_senders, args_senders], axis=-1).reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2 * 2)
+      #v_v_concat = jnp.concatenate([args_receivers, args_receivers], axis=-1).reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2 * 2)
+
+      #F_u_u = restriction_map(u_u_concat).reshape(self.b, self.n, self.stalk_dim, self.stalk_dim)
+      #F_u_u_12 = jnp.sqrt(jnp.linalg.inv(F_u_u))
+
+      #F_v_v = restriction_map(v_v_concat).reshape(self.b, self.n, self.stalk_dim, self.stalk_dim)
+      #F_v_v_12 = jnp.sqrt(jnp.linalg.inv(F_v_v))
+
+      #msg_args_senders = F_v_v_12 @ F_v_e_t @ F_u_e @ F_u_u_12 @ msg_args_senders
+      msg_args_senders = F_v_e_t @ F_u_e @ msg_args_senders 
+      msg_args_senders =  msg_args_senders.reshape(self.b, self.n, self.mid_size * self.stalk_dim)
+     
+      
+      msgs = (
+          jnp.expand_dims(msg_args_senders, axis=1) + jnp.expand_dims(msg_args_senders, axis=2) +
+          msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
+      
+      return msgs
+
+    def message_reduction(msgs, adj_mat):
+      msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
+      #msgs = msgs / jnp.sum(adj_mat, axis=-1, keepdims=True)
+      return msgs
+  
+    def phi(state, msgs):
+      #return jnp.maximum(state, msgs)
+      state = state.reshape(self.b, self.n, self.mid_size*2, self.stalk_dim)
+      state = left_weights(state)
+      state = jnp.einsum('...ij -> ...ji', state)
+      state = right_weights(state)
+      state = state.reshape(self.b, self.n, self.mid_size * self.stalk_dim)
+
+      return jax.nn.relu(state - msgs)
+    
+    
+    msgs = psi(z, z, edge_fts, graph_fts)
+    msgs = message_reduction(msgs, adj_mat)
+    state = phi(z, msgs)
+    #node_args = delta(hidden, state, f)
+
+    if self.use_ln:
+      ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+      state = ln(state)
+
+    return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+class SheafNet(SheafNetBase):
+
+  """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
+
+  def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
+               adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
+    adj_mat = jnp.ones_like(adj_mat)
+    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
 
 
 class DeltaTestNetBase(Processor):
@@ -144,9 +302,10 @@ class DeltaTestNetBase(Processor):
     m_g = hk.Linear(self.mid_size)
 
     layers = []
-    for _ in range(self.f_depth):
+    for _ in range(self.f_depth-1):
       layers.append(hk.Linear(self.f_width))
       layers.append(jax.nn.relu)
+    layers.append(hk.Linear(self.f_width))
 
     f = hk.Sequential(layers)
 
@@ -1308,6 +1467,17 @@ def get_processor_factory(kind: str,
       )
     elif kind == 'deltatest':
       processor = DeltaTestNet(
+          out_size=out_size,
+          msgs_mlp_sizes=[out_size, out_size],
+          use_ln=use_ln,
+          use_triplets=False,
+          nb_triplet_fts=0,
+          basis=basis,
+          f_depth=f_depth,
+          f_width=f_width
+      )
+    elif kind == 'sheaf':
+      processor = SheafNet(
           out_size=out_size,
           msgs_mlp_sizes=[out_size, out_size],
           use_ln=use_ln,

@@ -95,7 +95,7 @@ flags.DEFINE_integer('train_steps', 10000, 'Number of training iterations.')
 flags.DEFINE_integer('eval_every', 50, 'Evaluation frequency (in steps).')
 flags.DEFINE_integer('test_every', 500, 'Evaluation frequency (in steps).')
 
-flags.DEFINE_integer('hidden_size', 128,
+flags.DEFINE_integer('hidden_size', 129,
                      'Number of hidden units of the model.')
 flags.DEFINE_integer('nb_heads', 1, 'Number of heads for GAT processors')
 flags.DEFINE_integer('nb_msg_passing_steps', 1,
@@ -140,8 +140,8 @@ flags.DEFINE_integer('nb_triplet_fts', 8,
 flags.DEFINE_enum('encoder_init', 'xavier_on_scalars',
                   ['default', 'xavier_on_scalars'],
                   'Initialiser to use for the encoders.')
-flags.DEFINE_enum('processor_type', 'deltatest',
-                  ['asynchronous', 'heisenberg', 'deltatest'],
+flags.DEFINE_enum('processor_type', 'sheaf',
+                  ['asynchronous', 'heisenberg', 'deltatest', 'sheaf'],
                   'Processor type to use as the network P.')
 flags.DEFINE_float('basis', 2.0,
                    'Basis for the asynchronous processor')
