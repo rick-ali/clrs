@@ -514,11 +514,10 @@ class AsynchronousNetL3Base(Processor):
         msg_g = semiring_g(msg_g)
         
       else:
-        msg_1 = semiring_1(msg_1)
-        msg_2 = semiring_2(msg_2)
-        msg_e = semiring_e(msg_e)
-        msg_g = semiring_g(msg_g)
-
+        msg_1 = semiring_1(args_receivers)
+        msg_2 = semiring_2(args_senders)
+        msg_e = semiring_e(edge_fts)
+        msg_g = semiring_g(graph_fts)
       msgs = (
           jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
           msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
