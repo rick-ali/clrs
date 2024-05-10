@@ -492,6 +492,7 @@ def main(args):
     current_train_items = [0] * len(FLAGS.algorithms)
     step = 0
     next_eval = 0
+    next_test = 0
     # Make sure scores improve on first step, but not overcome best score
     # until all algos have had at least one evaluation.
     val_scores = [-99999.9] * len(FLAGS.algorithms)
@@ -562,14 +563,18 @@ def main(args):
           
           wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: validation_accuracy': val_stats['score']})
 
-          test_stats = collect_and_eval(
-              test_samplers[algo_idx],
-              functools.partial(eval_model.predict, algorithm_index=algo_idx),
-              test_sample_counts[algo_idx],
-              new_rng_key,
-              extras=common_extras)
-          logging.info('(test) algo %s : %s', FLAGS.algorithms[algo_idx], test_stats)
-          wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: test_accuracy': test_stats['score']})
+          # Test
+          if step >= next_test:
+            new_rng_key, rng_key = jax.random.split(rng_key)
+            test_stats = collect_and_eval(
+                test_samplers[algo_idx],
+                functools.partial(eval_model.predict, algorithm_index=algo_idx),
+                test_sample_counts[algo_idx],
+                new_rng_key,
+                extras=common_extras)
+            logging.info('(test) algo %s : %s', FLAGS.algorithms[algo_idx], test_stats)
+            wandbrun.log({f'{FLAGS.algorithms[algo_idx]}: test_accuracy': test_stats['score']})
+            next_test += FLAGS.test_every
 
         next_eval += FLAGS.eval_every
 
