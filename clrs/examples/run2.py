@@ -35,7 +35,7 @@ WANDBINSTANTIATED = False
 
 ALGOS = [
     # 'bellman_ford',
-		'bfs',
+		# 'bfs',
 		# 'activity_selector',
 		# 'articulation_points',
 		# 'binary_search',
@@ -57,7 +57,7 @@ ALGOS = [
 		# 'mst_kruskal',
 		# 'mst_prim',
 		# 'naive_string_matcher',
-		# 'optimal_bst',
+		'optimal_bst',
 		# 'quickselect',
 		# 'quicksort',
 		# 'segments_intersect',
@@ -143,14 +143,16 @@ flags.DEFINE_enum('encoder_init', 'xavier_on_scalars',
 flags.DEFINE_enum('processor_type', 'sheaf',
                   ['asynchronous', 'heisenberg', 'deltatest', 'sheaf'],
                   'Processor type to use as the network P.')
-flags.DEFINE_float('basis', 2.0,
+flags.DEFINE_float('basis', None,
                    'Basis for the asynchronous processor')
 flags.DEFINE_bool('linear_preproc', True,
                   'Whether to activate a linear layer before the semiring layer')
-flags.DEFINE_integer('f_depth', 1,
+flags.DEFINE_integer('f_depth', 4,
                      'Depth of the argument generation function')
 flags.DEFINE_integer('f_width', None,
                      'Width of the argument generation function. If None, it\'s the same as hidden')
+flags.DEFINE_integer('stalk_dim', 3,
+                     'dimension of the stalk do use in Sheaf net')
 
 flags.DEFINE_string('checkpoint_path', './tmp/CLRS30',
                     'Path in which checkpoints are saved.')
@@ -408,7 +410,7 @@ def main(args):
   print(f"f Width: {FLAGS.f_width}")
 
   wandb_project = "asynchronous_alignment"
-  wandb_run_name = f"asynch_model_{FLAGS.basis}" if FLAGS.basis is not None else "asynch_model_e"
+  wandb_run_name = f"{FLAGS.processor_type}"
   wandbrun = wandb.init(project=wandb_project, name=wandb_run_name, mode="disabled")
 
   global ALGOS
@@ -450,8 +452,9 @@ def main(args):
         nb_heads=FLAGS.nb_heads,
         basis=FLAGS.basis,
         linear_preproc=FLAGS.linear_preproc,
-        f_depth = FLAGS.f_depth,
-        f_width = FLAGS.f_width
+        f_depth=FLAGS.f_depth,
+        f_width=FLAGS.f_width,
+        stalk_dim=FLAGS.stalk_dim
     )
     model_params = dict(
         processor_factory=processor_factory,

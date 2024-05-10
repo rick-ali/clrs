@@ -254,7 +254,7 @@ class Net(hk.Module):
 
       nb_mp_steps = max(1, hints[0].data.shape[0] - 1)
       hiddens = jnp.zeros((batch_size, nb_nodes, self.hidden_dim))
-      node_args = jnp.zeros((batch_size, nb_nodes, int(self.hidden_dim/2)))
+      node_args = jnp.zeros((batch_size, nb_nodes, int(self.hidden_dim/2))) # necessary for heisenberg2d I think
 
       if self.use_lstm:
         lstm_state = lstm_init(batch_size * nb_nodes)
@@ -340,11 +340,19 @@ class Net(hk.Module):
               enc_algo_idx = [hk.Linear(self.hidden_dim,
                                         name=f'{name}_enc_linear')]
             enc[name] = enc_algo_idx
+          # Build hint encoders
           else:
             enc[name] = encoders.construct_encoders(
                 stage, loc, t, hidden_dim=self.hidden_dim,
                 init=self.encoder_init,
                 name=f'algo_{algo_idx}_{name}')
+            # if loc == _Location.NODE and t == _Type.POINTER and stage == _Stage.HINT:
+            #   enc[name+"_reverse"] = encoders.construct_encoders(
+            #     stage, _Location.EDGE, t, hidden_dim=self.hidden_dim,
+            #     init=self.encoder_init,
+            #     name=f'algo_{algo_idx}_{name+"_reverse"}')
+
+            
 
         if stage == _Stage.OUTPUT or (
             stage == _Stage.HINT and self.decode_hints):
@@ -387,10 +395,22 @@ class Net(hk.Module):
     if self.encode_hints:
       trajectories.append(hints)
 
-    for trajectory in trajectories:
+    for i, trajectory in enumerate(trajectories):
       for dp in trajectory:
         try:
           dp = encoders.preprocess(dp, nb_nodes)
+
+          # Add reversal pointers
+          # if we want to create an edge of type MASK we need to expand dims
+          # if dp.location == 'node' and dp.type_ == _Type.POINTER and i > 0:
+          #   masks = jnp.transpose(dp.data, axes=(0,2,1))
+          #   new_dp = probing.DataPoint(name=dp.name+"_reverse", 
+          #                                   location=_Location.EDGE, 
+          #                                   type_=_Type.MASK,
+          #                                   data=masks)
+          #   trajectory.append(new_dp)
+         
+
           assert dp.type_ != _Type.SOFT_POINTER
           adj_mat = encoders.accum_adj_mat(dp, adj_mat)
           encoder = encs[dp.name]
