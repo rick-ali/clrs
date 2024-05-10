@@ -140,3 +140,37 @@ class OtherSideLinear(hk.Module):
       out = out + b
 
     return out
+  
+class SingleCoefficient(hk.Module):
+  """Multiply matrix on the other side module."""
+
+  def __init__(
+      self,
+      w_init: Optional[hk.initializers.Initializer] = None,
+      name: Optional[str] = None,
+  ):
+    super().__init__(name=name)
+    self.input_size = None
+    self.w_init = w_init
+
+  def __call__(
+      self,
+      inputs: jax.Array,
+      *,
+      precision: Optional[lax.Precision] = None,
+  ) -> jax.Array:
+    """Computes a linear transform of the input."""
+    if not inputs.shape:
+      raise ValueError("Input must not be scalar.")
+
+    dtype = inputs.dtype
+
+    w_init = self.w_init
+    if w_init is None:
+      stddev = 1. / np.sqrt(self.input_size)
+      w_init = hk.initializers.TruncatedNormal(stddev=stddev)
+    w = hk.get_parameter("w", [], dtype, init=w_init)
+
+    out = w * inputs
+
+    return out
