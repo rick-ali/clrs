@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
 from clrs._src.layers import SemiringLayer, OtherSideLinear
+import functools
 
 
 _Array = chex.Array
@@ -146,6 +147,8 @@ class SheafNetBase(Processor):
 
     m_e = hk.Linear(self.mid_size * self.stalk_dim)
     m_g = hk.Linear(self.mid_size * self.stalk_dim)
+    o_1 = hk.Linear(self.mid_size * self.stalk_dim)
+    o_2 = hk.Linear(self.mid_size * self.stalk_dim)
 
 
     def psi(args_receivers, args_senders, edge_fts, graph_fts):
@@ -193,18 +196,24 @@ class SheafNetBase(Processor):
       return msgs
 
     def message_aggregation(msgs, adj_mat):
-      msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
+      # msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
+      # return msgs
+      maxarg = jnp.where(jnp.expand_dims(adj_mat, -1),
+                         msgs,
+                         -BIG_NUMBER)
+      msgs = jnp.max(maxarg, axis=1)
       return msgs
 
     def phi(state, msgs):
-      #return jnp.maximum(state, msgs)
-      state = state.reshape(self.b, self.n, self.mid_size*2, self.stalk_dim)
-      state = left_weights(state)
-      state = jnp.einsum('...ij -> ...ji', state)
-      state = right_weights(state)
-      state = state.reshape(self.b, self.n, self.mid_size * self.stalk_dim)
-
-      return jax.nn.relu(state - msgs)
+      # return jnp.maximum(state, msgs)
+      # state = state.reshape(self.b, self.n, self.mid_size*2, self.stalk_dim)
+      # state = left_weights(state)
+      # state = jnp.einsum('...ij -> ...ji', state)
+      # state = right_weights(state)
+      # state = state.reshape(self.b, self.n, self.mid_size * self.stalk_dim)
+      #return jax.nn.relu(state - msgs)
+      state = state.reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2)
+      return o_1(state) + o_2(msgs)
 
     def get_sheaf_triplet_msgs(z, edge_fts, graph_fts, nb_triplet_fts):
       """Triplet messages, as done by Dudzik and Velickovic (2022)."""
@@ -746,8 +755,6 @@ class HeisenbergNetBase2d(Processor):
       use_triplets: bool = False,
       nb_triplet_fts: int = 8,
       gated: bool = False,
-      basis: Optional[float] = None,
-      linear_before_message: bool = False,
       name: str = 'HeisenbergNet2D',
   ):
     name = 'HeisenbergNet2D'
@@ -765,8 +772,6 @@ class HeisenbergNetBase2d(Processor):
     self.use_triplets = use_triplets
     self.nb_triplet_fts = nb_triplet_fts
     self.gated = gated
-    self.basis = basis
-    self.linear_before_message = linear_before_message
 
   def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
       self,
@@ -791,10 +796,8 @@ class HeisenbergNetBase2d(Processor):
     # message_dim = 2*N
     # state_dim = 2*N
     # args_dim = N
-    #z_msgs = jnp.concatenate([node_fts, hidden], axis=-1)
+    z = jnp.concatenate([node_fts, hidden], axis=-1)
     z_args = jnp.concatenate([node_fts, node_args], axis=-1)
-    node_fts_layer_1 = hk.Linear(2*self.N)
-    node_fts_layer_2 = hk.Linear(2*self.N)
     m_1 = hk.Linear(2*self.N)
     m_2 = hk.Linear(2*self.N)
     m_e = hk.Linear(2*self.N)
@@ -802,7 +805,19 @@ class HeisenbergNetBase2d(Processor):
 
     f = hk.Linear(self.N)
 
-    def psi(args_receivers, args_senders, node_fts_receivers, node_fts_senders, edge_fts, graph_fts):
+    tri_msgs = None
+
+    if self.use_triplets:
+      # Triplet messages, as done by Dudzik and Velickovic (2022)
+      triplets = get_triplet_msgs(z, edge_fts, graph_fts, self.nb_triplet_fts)
+
+      o3 = hk.Linear(self.out_size)
+      tri_msgs = o3(jnp.max(triplets, axis=1))  # (B, N, N, H)
+
+      if self.activation is not None:
+        tri_msgs = self.activation(tri_msgs)
+
+    def psi(args_receivers, args_senders, edge_fts, graph_fts):
       #msg_1_input = node_fts_layer_1(node_fts_receivers)
       #msg_2_input = node_fts_layer_2(node_fts_senders)
       msg_e = m_e(edge_fts)
@@ -818,6 +833,14 @@ class HeisenbergNetBase2d(Processor):
       )
       return msgs
     
+    msgs = psi(z_args, z_args, edge_fts, graph_fts)
+
+    if self._msgs_mlp_sizes is not None:
+      msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
+
+    if self.mid_act is not None:
+      msgs = self.mid_act(msgs)
+
     def message_reduction(msgs, adj_mat):
       msgs = msgs * jnp.expand_dims(adj_mat, -1)
       even_indices = jnp.arange(0, msgs.shape[-1], 2)
@@ -839,13 +862,16 @@ class HeisenbergNetBase2d(Processor):
       msgs_ = msgs_.at[..., 0, 0].set(1)
       msgs_ = msgs_.at[..., 1, 1].set(1)
       msgs_ = msgs_.at[..., 2, 2].set(1)
-      msgs_ = jnp.einsum('ma...ij -> m...ij', msgs_)
+      #msgs_ = jnp.einsum('ma...ij -> m...ij', msgs_)
+      msgs_ = functools.reduce(jnp.matmul, jnp.rollaxis(msgs_, 1))
       res_  = jnp.zeros((self.b, self.n, self.N, 2))
       res_ = res_.at[..., 0].set(msgs_[..., 0, 1]) # a
       #res_ = res_.at[..., 1].set(msgs_[..., 1, 2]) # b
       res_ = res_.at[..., 1].set(msgs_[..., 0, 2]) # c this 1 was a 2
       return res_.reshape((self.b, self.n, 2*self.N))
       
+    msgs = message_reduction(msgs, adj_mat)
+
     def phi(state, msgs):
       even_indices = jnp.arange(0, msgs.shape[-1], 2)
       _msgs1 = msgs[..., even_indices]
@@ -855,7 +881,7 @@ class HeisenbergNetBase2d(Processor):
       return state
     
     def delta(msgs, hidden, hidden_acted_on, f):
-      Delta_f = jax.nn.relu(f(state)) - jax.nn.relu(f(hidden_acted_on))  # f(state) = f(phi(msgs, hidden))
+      Delta_f = jax.nn.relu(f(hidden)) - jax.nn.relu(f(hidden_acted_on))  # f(state) = f(phi(msgs, hidden))
       even_indices = jnp.arange(0, msgs.shape[-1], 2)
       odd_indices  = jnp.arange(1, msgs.shape[-1], 2)
 
@@ -868,16 +894,26 @@ class HeisenbergNetBase2d(Processor):
 
       return _hidden + _msgs2 + Delta_f
 
-    msgs = psi(z_args, z_args, node_fts, node_fts, edge_fts, graph_fts)
-    msgs = message_reduction(msgs, adj_mat)
-    state = phi(hidden, msgs)
-    node_args = delta(msgs, hidden, state, f)
+    
+    ret = phi(hidden, msgs)
+
+    if self.activation is not None:
+      ret = self.activation(ret)
+
+    node_args = delta(msgs, hidden, ret, f)
 
     if self.use_ln:
       ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-      state = ln(state)
+      ret = ln(ret)
 
-    return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
+    if self.gated:
+      gate1 = hk.Linear(self.out_size)
+      gate2 = hk.Linear(self.out_size)
+      gate3 = hk.Linear(self.out_size, b_init=hk.initializers.Constant(-3))
+      gate = jax.nn.sigmoid(gate3(jax.nn.relu(gate1(z) + gate2(msgs))))
+      ret = ret * gate + hidden * (1-gate)
+
+    return ret, node_args, tri_msgs  # pytype: disable=bad-return-type  # numpy-scalars
 
 class HeisenbergNet2d(HeisenbergNetBase2d):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
@@ -1544,6 +1580,16 @@ def get_processor_factory(kind: str,
           nb_triplet_fts=0,
           basis=basis
       )
+    elif kind == 'heisenberg2d':
+      processor = HeisenbergNet2d(
+          out_size=out_size,
+          msgs_mlp_sizes=[out_size, out_size],
+          use_ln=use_ln,
+          use_triplets=True,
+          nb_triplet_fts=nb_triplet_fts,
+          gated=True
+      )
+      
     elif kind == 'deltatest':
       processor = DeltaTestNet(
           out_size=out_size,
