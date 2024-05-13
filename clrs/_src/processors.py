@@ -463,7 +463,7 @@ class DeltaTestNet(DeltaTestNetBase):
     return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
 
 class AsynchronousNetL1Base(Processor):
-  """Asynchronous L3 net."""
+  """Asynchronous L1 net."""
 
   def __init__(
       self,
@@ -543,10 +543,7 @@ class AsynchronousNetL1Base(Processor):
       msgs = self.mid_act(msgs)
 
     def message_reduction(msgs, adj_mat):
-      maxarg = jnp.where(jnp.expand_dims(adj_mat, -1),
-                         msgs,
-                         -BIG_NUMBER)
-      msgs = jnp.max(maxarg, axis=1)
+      msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
       return msgs
   
     msgs = message_reduction(msgs, adj_mat)
