@@ -462,7 +462,122 @@ class DeltaTestNet(DeltaTestNetBase):
     adj_mat = jnp.ones_like(adj_mat)
     return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
 
+class AsynchronousNetL1Base(Processor):
+  """Asynchronous L3 net."""
 
+  def __init__(
+      self,
+      out_size: int,
+      mid_size: Optional[int] = None,
+      mid_act: Optional[_Fn] = None,
+      activation: Optional[_Fn] = jax.nn.relu,
+      reduction: _Fn = jnp.max,
+      msgs_mlp_sizes: Optional[List[int]] = None,
+      use_ln: bool = False,
+      use_triplets: bool = False,
+      nb_triplet_fts: int = 8,
+      gated: bool = False,
+      name: str = 'AsynchronousL3Net',
+  ):
+    name = 'AsynchronousL3Net'
+    super().__init__(name=name)
+    if mid_size is None:
+      self.mid_size = out_size
+    else:
+      self.mid_size = mid_size
+    self.out_size = out_size
+    self.mid_act = mid_act
+    self.activation = activation
+    self.reduction = reduction
+    self._msgs_mlp_sizes = msgs_mlp_sizes
+    self.use_ln = use_ln
+    self.use_triplets = use_triplets
+    self.nb_triplet_fts = nb_triplet_fts
+    self.gated = gated
+
+  def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+      self,
+      node_fts: _Array,
+      edge_fts: _Array,
+      graph_fts: _Array,
+      adj_mat: _Array,
+      hidden: _Array,
+      node_args: _Array,
+      **unused_kwargs,
+  ) -> _Array:
+    """MPNN inference step."""
+    b, n, _ = node_fts.shape
+    assert edge_fts.shape[:-1] == (b, n, n)
+    assert graph_fts.shape[:-1] == (b,)
+    assert adj_mat.shape == (b, n, n)
+
+    z = jnp.concatenate([node_fts, hidden], axis=-1)
+  
+    m_1 = hk.Linear(self.mid_size)
+    m_2 = hk.Linear(self.mid_size)
+    m_3 = hk.Linear(self.mid_size)
+    m_4 = hk.Linear(self.mid_size)
+
+    o_1 = hk.Linear(self.mid_size)
+    o_2 = hk.Linear(self.mid_size)
+
+
+    def psi(args_receivers, args_senders, edge_fts, graph_fts):
+      msg_1 = m_1(args_receivers)
+      msg_2 = m_2(args_senders)
+      msg_e = m_3(edge_fts)
+      msg_g = m_4(graph_fts)
+
+      msgs = (
+          jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+          msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
+      
+      return msgs
+
+    msgs = psi(z, z, edge_fts, graph_fts)
+
+    if self._msgs_mlp_sizes is not None:
+      msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
+
+    if self.mid_act is not None:
+      msgs = self.mid_act(msgs)
+
+    def message_reduction(msgs, adj_mat):
+      maxarg = jnp.where(jnp.expand_dims(adj_mat, -1),
+                         msgs,
+                         -BIG_NUMBER)
+      msgs = jnp.max(maxarg, axis=1)
+      return msgs
+  
+    msgs = message_reduction(msgs, adj_mat)
+
+    def phi(state, msgs):
+      return o_1(state) + o_2(msgs)
+    
+    ret = phi(hidden, msgs)
+    if self.activation is not None:
+      ret = self.activation(ret)
+
+    if self.use_ln:
+      ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+      ret = ln(ret)
+
+    if self.gated:
+      gate1 = hk.Linear(self.out_size)
+      gate2 = hk.Linear(self.out_size)
+      gate3 = hk.Linear(self.out_size, b_init=hk.initializers.Constant(-3))
+      gate = jax.nn.sigmoid(gate3(jax.nn.relu(gate1(z) + gate2(msgs))))
+      ret = ret * gate + hidden * (1-gate)
+
+    return ret, None, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+class AsynchronousNetL1(AsynchronousNetL1Base):
+  """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
+
+  def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
+               adj_mat: _Array, hidden: _Array, node_args: _Array, **unused_kwargs) -> _Array:
+    adj_mat = jnp.ones_like(adj_mat)
+    return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden, node_args)
 
 class AsynchronousNetL3Base(Processor):
   """Asynchronous L3 net."""
@@ -1583,7 +1698,7 @@ def get_processor_factory(kind: str,
           use_triplets=False,
           nb_triplet_fts=0
       )
-    elif kind == 'asynchronous':
+    elif kind == 'asynchronousL3':
       processor = AsynchronousNetL3(
           out_size=out_size,
           msgs_mlp_sizes=[out_size, out_size],
@@ -1591,7 +1706,17 @@ def get_processor_factory(kind: str,
           use_triplets=False,
           nb_triplet_fts=0,
           basis=basis,
+          gated=True,
           linear_preproc=linear_preproc
+      )
+    elif kind == 'asynchronousL1':
+      processor = AsynchronousNetL1(
+          out_size=out_size,
+          msgs_mlp_sizes=[out_size, out_size],
+          use_ln=use_ln,
+          use_triplets=False,
+          nb_triplet_fts=0,
+          gated=True,
       )
     elif kind == 'heisenberg':
       processor = HeisenbergNet(
