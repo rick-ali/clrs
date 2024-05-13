@@ -360,79 +360,99 @@ class DeltaTestNetBase(Processor):
     assert adj_mat.shape == (b, n, n)
 
     z = jnp.concatenate([node_fts, hidden], axis=-1)
+    z_args = jnp.concatenate([node_fts, node_args], axis=-1)
   
     m_1 = hk.Linear(self.mid_size)
     m_2 = hk.Linear(self.mid_size)
-    m_3 = hk.Linear(self.mid_size)
-    m_4 = hk.Linear(self.mid_size)
     m_e = hk.Linear(self.mid_size)
     m_g = hk.Linear(self.mid_size)
-    dm_1 = hk.Linear(self.mid_size)
-    dm_3 = hk.Linear(self.mid_size, b_init=hk.initializers.Constant(0.5))
-    dm_e = hk.Linear(self.mid_size)
 
-    layers = []
-    layer_depths = [int(self.f_width * (1 - i*0.2)) for i in range(int(self.f_depth/2))]
-    layer_depths = layer_depths + layer_depths[::-1]
-    for i in range(self.f_depth):
-      layers.append(hk.Linear(layer_depths[i]))
-      layers.append(jax.nn.relu)
+    o_1 = hk.Linear(self.mid_size)
+    o_2 = hk.Linear(self.mid_size)
+
+    # layers = []
+    # layer_depths = [int(self.f_width * (1 - i*0.2)) for i in range(int(self.f_depth/2))]
+    # layer_depths = layer_depths + layer_depths[::-1]
+    # for i in range(self.f_depth):
+    #   layers.append(hk.Linear(layer_depths[i]))
+    #   layers.append(jax.nn.relu)
     
     #layers.append(hk.Linear(self.f_width))
 
-    f = hk.Sequential(layers)
+    f = hk.Linear(self.mid_size)
 
-    def psi(args_receivers, args_senders, node_fts_senders, node_fts_receivers, edge_fts, graph_fts):
+    tri_msgs = None
+
+    if self.use_triplets:
+      # Triplet messages, as done by Dudzik and Velickovic (2022)
+      triplets = get_triplet_msgs(z, edge_fts, graph_fts, self.nb_triplet_fts)
+
+      o3 = hk.Linear(self.out_size)
+      tri_msgs = o3(jnp.max(triplets, axis=1))  # (B, N, N, H)
+
+      if self.activation is not None:
+        tri_msgs = self.activation(tri_msgs)
+
+    def psi(args_receivers, args_senders, edge_fts, graph_fts):
       msg_1 = m_1(args_receivers)
       msg_2 = m_2(args_senders)
       msg_e = m_e(edge_fts)
       msg_g = m_g(graph_fts)
-      msg_3 = m_3(node_fts_senders)
-      msg_4 = m_4(node_fts_receivers)
+
 
       msgs = (
           jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
-          jnp.expand_dims(msg_3, axis=1) + jnp.expand_dims(msg_4, axis=2) +
           msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
       
       return msgs
+    
+    msgs = psi(z_args, z_args, edge_fts, graph_fts)
+
+    if self._msgs_mlp_sizes is not None:
+      msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
+
+    if self.mid_act is not None:
+      msgs = self.mid_act(msgs)
 
     def message_reduction(msgs, adj_mat):
       msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
-      msgs = msgs / jnp.sum(adj_mat, axis=-1, keepdims=True)
+      #msgs = msgs / jnp.sum(adj_mat, axis=-1, keepdims=True)
       return msgs
   
-    def phi(state, msgs):
-      return jnp.maximum(state, msgs)
-      # return state + msgs
-
-    
-    def delta(hidden, node_fts, edge_fts, msgs, phi):
-      edge_fts = jnp.sum(edge_fts, axis=1)
-
-      f_x = dm_1(hidden) #+ dm_3(node_fts) + dm_e(edge_fts)
-
-      # hidden_expanded = jnp.expand_dims(hidden, axis=-1) 
-      # node_fts_expanded = jnp.expand_dims(node_fts, axis=-1) 
-      # edge_fts_expanded = jnp.expand_dims(edge_fts, axis=-1) 
-      # msgs_expanded = jnp.expand_dims(msgs, axis=-1)
-      
-      f_m_x = dm_1(phi(hidden, msgs)) #+\
-              #dm_3(jax.scipy.special.logsumexp(node_fts_expanded + msgs_expanded, axis=-1)) +\
-              #dm_e(jax.scipy.special.logsumexp(edge_fts_expanded + msgs_expanded, axis=-1)) 
-      
-      return f_x - f_m_x
-
-    msgs = psi(node_args, node_args, node_fts, node_fts, edge_fts, graph_fts)
     msgs = message_reduction(msgs, adj_mat)
-    state = phi(hidden, msgs)
-    node_args = delta(hidden, node_fts, edge_fts, msgs, phi)
+
+    def phi(state, msgs):
+      #return jnp.maximum(state, msgs)
+      return o_1(state) + o_2(msgs)
+
+    def delta(msgs, hidden, hidden_acted_on, f):
+      Delta_f = jax.nn.relu(f(hidden)) - jax.nn.relu(f(hidden_acted_on))  # f(state) = f(phi(msgs, hidden))
+      return Delta_f
+
+    ret = phi(hidden, msgs)
+    if self.activation is not None:
+      ret = self.activation(ret)
+    
+    new_args = delta(msgs, hidden, ret, f)
 
     if self.use_ln:
       ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-      state = ln(state)
+      ret = ln(ret)
 
-    return state, node_args, None  # pytype: disable=bad-return-type  # numpy-scalars
+    if self.gated:
+      gate1 = hk.Linear(self.out_size)
+      gate2 = hk.Linear(self.out_size)
+      gate3 = hk.Linear(self.out_size, b_init=hk.initializers.Constant(-3))
+      gate = jax.nn.sigmoid(gate3(jax.nn.relu(gate1(z) + gate2(msgs))))
+      ret = ret * gate + hidden * (1-gate)
+
+      gate4 = hk.Linear(self.out_size)
+      gate5 = hk.Linear(self.out_size)
+      gate6 = hk.Linear(self.out_size, b_init=hk.initializers.Constant(-3))
+      gate_ = jax.nn.sigmoid(gate6(jax.nn.relu(gate4(z) + gate5(msgs))))
+      new_args = new_args * gate_ + node_args * (1-gate_)
+
+    return ret, new_args, None  # pytype: disable=bad-return-type  # numpy-scalars
 
 class DeltaTestNet(DeltaTestNetBase):
   """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
@@ -873,26 +893,28 @@ class HeisenbergNetBase2d(Processor):
     msgs = message_reduction(msgs, adj_mat)
 
     def phi(state, msgs):
-      even_indices = jnp.arange(0, msgs.shape[-1], 2)
-      _msgs1 = msgs[..., even_indices]
-      _msgs2 = jnp.concatenate((jnp.expand_dims(_msgs1, axis=-1), jnp.expand_dims(_msgs1, axis=-1)), axis=-1)
-      _msgs  = _msgs2.flatten(order='C').reshape(self.b, self.n, 2*self.N)
-      state = _msgs + hidden
-      return state
+      # even_indices = jnp.arange(0, msgs.shape[-1], 2)
+      # _msgs1 = msgs[..., even_indices]
+      # _msgs2 = jnp.concatenate((jnp.expand_dims(_msgs1, axis=-1), jnp.expand_dims(_msgs1, axis=-1)), axis=-1)
+      # _msgs  = _msgs2.flatten(order='C').reshape(self.b, self.n, 2*self.N)
+      # state = _msgs + hidden
+      # return state
+      return state+msgs
     
     def delta(msgs, hidden, hidden_acted_on, f):
       Delta_f = jax.nn.relu(f(hidden)) - jax.nn.relu(f(hidden_acted_on))  # f(state) = f(phi(msgs, hidden))
-      even_indices = jnp.arange(0, msgs.shape[-1], 2)
-      odd_indices  = jnp.arange(1, msgs.shape[-1], 2)
+      # even_indices = jnp.arange(0, msgs.shape[-1], 2)
+      # odd_indices  = jnp.arange(1, msgs.shape[-1], 2)
 
-      _msgs1 = msgs[..., even_indices]
-      _msgs2 = msgs[..., odd_indices]
+      # _msgs1 = msgs[..., even_indices]
+      # _msgs2 = msgs[..., odd_indices]
 
-      _hidden2 = hidden[..., odd_indices]
+      # _hidden2 = hidden[..., odd_indices]
       
-      _hidden = _msgs1 * _hidden2
+      # _hidden = _msgs1 * _hidden2
 
-      return _hidden + _msgs2 + Delta_f
+      #return _hidden + _msgs2 + Delta_f
+      return Delta_f
 
     
     ret = phi(hidden, msgs)
@@ -1596,7 +1618,8 @@ def get_processor_factory(kind: str,
           msgs_mlp_sizes=[out_size, out_size],
           use_ln=use_ln,
           use_triplets=False,
-          nb_triplet_fts=0,
+          nb_triplet_fts=nb_triplet_fts,
+          gated=True,
           basis=basis,
           f_depth=f_depth,
           f_width=f_width
