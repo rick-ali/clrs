@@ -254,7 +254,7 @@ class Net(hk.Module):
 
       nb_mp_steps = max(1, hints[0].data.shape[0] - 1)
       hiddens = jnp.zeros((batch_size, nb_nodes, self.hidden_dim))
-      node_args = jnp.zeros((batch_size, nb_nodes, int(self.hidden_dim/2))) # necessary for heisenberg2d I think
+      node_args = jnp.zeros((batch_size, nb_nodes, self.hidden_dim)) # necessary for heisenberg2d I think
 
       if self.use_lstm:
         lstm_state = lstm_init(batch_size * nb_nodes)
