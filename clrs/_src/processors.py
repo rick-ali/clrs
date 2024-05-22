@@ -140,11 +140,13 @@ class SheafNetBase(Processor):
 
     z = z.reshape(self.b, self.n, self.mid_size*2, self.stalk_dim)
 
-    left_weights  = hk.Linear(self.stalk_dim, w_init=hk.initializers.Identity())
-    right_weights = hk.Linear(self.mid_size, w_init=hk.initializers.Orthogonal())
+    # left_weights  = hk.Linear(self.stalk_dim, w_init=hk.initializers.Identity())
+    # right_weights = hk.Linear(self.mid_size, w_init=hk.initializers.Orthogonal())
 
     restriction_map = hk.Linear(self.stalk_dim ** 2)
 
+    m_1 = hk.Linear(self.mid_size * self.stalk_dim)
+    m_2 = hk.Linear(self.mid_size * self.stalk_dim)
     m_e = hk.Linear(self.mid_size * self.stalk_dim)
     m_g = hk.Linear(self.mid_size * self.stalk_dim)
     o_1 = hk.Linear(self.mid_size * self.stalk_dim)
@@ -152,10 +154,14 @@ class SheafNetBase(Processor):
 
 
     def psi(args_receivers, args_senders, edge_fts, graph_fts):
-      #msg_args_senders = jnp.einsum('...ij -> ...ji', args_senders)  # swap hidden with sheaf dimension
-      msg_args_senders = left_weights(args_senders)
-      msg_args_senders = jnp.einsum('...ij -> ...ji', msg_args_senders)
-      msg_args_senders = right_weights(msg_args_senders)
+      # msg_args_senders = left_weights(args_senders)
+      # msg_args_senders = jnp.einsum('...ij -> ...ji', msg_args_senders)
+      # msg_args_senders = right_weights(msg_args_senders)
+      args_receivers_reshaped = args_receivers.reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2)
+      args_senders_reshaped   = args_senders.reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2)
+      msgs_1 = m_1(args_receivers_reshaped)
+      msgs_2 = m_2(args_senders_reshaped)
+      msg_args_senders = (msgs_1 + msgs_2).reshape(self.b, self.n, self.stalk_dim, self.mid_size)
 
       msg_e = m_e(edge_fts)#.reshape(self.b, self.n, self.stalk_dim, self.mid_size)
       msg_g = m_g(graph_fts)#.reshape(self.b, self.n, self.stalk_dim, self.mid_size)
@@ -175,16 +181,7 @@ class SheafNetBase(Processor):
         F_v_e_t = jnp.expand_dims(F_v_e_t, axis=1)
         F_v_e_t = (F_v_e_t*jnp.eye(self.stalk_dim)).squeeze(1)
 
-      #u_u_concat = jnp.concatenate([args_senders, args_senders], axis=-1).reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2 * 2)
-      #v_v_concat = jnp.concatenate([args_receivers, args_receivers], axis=-1).reshape(self.b, self.n, self.mid_size * self.stalk_dim * 2 * 2)
 
-      #F_u_u = restriction_map(u_u_concat).reshape(self.b, self.n, self.stalk_dim, self.stalk_dim)
-      #F_u_u_12 = jnp.sqrt(jnp.linalg.inv(F_u_u))
-
-      #F_v_v = restriction_map(v_v_concat).reshape(self.b, self.n, self.stalk_dim, self.stalk_dim)
-      #F_v_v_12 = jnp.sqrt(jnp.linalg.inv(F_v_v))
-
-      #msg_args_senders = F_v_v_12 @ F_v_e_t @ F_u_e @ F_u_u_12 @ msg_args_senders
       msg_args_senders = F_v_e_t @ F_u_e @ msg_args_senders 
       msg_args_senders =  msg_args_senders.reshape(self.b, self.n, self.mid_size * self.stalk_dim)
      
