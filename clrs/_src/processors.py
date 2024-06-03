@@ -957,8 +957,6 @@ class HeisenbergNetBase2d(Processor):
         tri_msgs = self.activation(tri_msgs)
 
     def psi(args_receivers, args_senders, edge_fts, graph_fts):
-      #msg_1_input = node_fts_layer_1(node_fts_receivers)
-      #msg_2_input = node_fts_layer_2(node_fts_senders)
       msg_e = m_e(edge_fts)
       msg_g = m_g(graph_fts)
 
@@ -967,48 +965,18 @@ class HeisenbergNetBase2d(Processor):
 
       msgs = (
           jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
-          #jnp.expand_dims(msg_1_input, axis=1) + jnp.expand_dims(msg_2_input, axis=2) +
           msg_e + jnp.expand_dims(msg_g, axis=(1, 2))
       )
       return msgs
     
     msgs = psi(z_args, z_args, edge_fts, graph_fts)
 
-    # if self._msgs_mlp_sizes is not None:
-    #   msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
+    if self._msgs_mlp_sizes is not None:
+      msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
 
-    # if self.mid_act is not None:
-    #   msgs = self.mid_act(msgs)
+    if self.mid_act is not None:
+      msgs = self.mid_act(msgs)
 
-    def message_reduction_2(msgs, adj_mat):
-      msgs = msgs * jnp.expand_dims(adj_mat, -1)
-      even_indices = jnp.arange(0, msgs.shape[-1], 2)
-      odd_indices = jnp.arange(1, msgs.shape[-1], 2)
-      msgs_1 = msgs[...,even_indices]
-      msgs_2 = msgs[...,odd_indices]
-      msgs_3 = jnp.concatenate((jnp.expand_dims(msgs_1, axis=-1), 
-                                jnp.expand_dims(msgs_1, axis=-1),
-                                jnp.expand_dims(msgs_2, axis=-1)
-                                ), axis=-1)
-      msgs_3  = msgs_3.flatten(order='C').reshape(self.b, self.n, self.n, 3*self.N)
-
-      temp = msgs_3.reshape(self.b, self.n, self.n, self.N, 3)
-
-      msgs_ = jnp.zeros((self.b, self.n, self.n, self.N, 3, 3))
-      msgs_ = msgs_.at[..., 0, 1].set(temp[...,0])
-      msgs_ = msgs_.at[..., 0, 2].set(temp[...,2])
-      msgs_ = msgs_.at[..., 1, 2].set(temp[...,1])
-      msgs_ = msgs_.at[..., 0, 0].set(1)
-      msgs_ = msgs_.at[..., 1, 1].set(1)
-      msgs_ = msgs_.at[..., 2, 2].set(1)
-      
-      msgs_ = jnp.einsum('ma...ij -> m...ij', msgs_)
-      #msgs_ = functools.reduce(jnp.matmul, jnp.rollaxis(msgs_, 1))
-      res_  = jnp.zeros((self.b, self.n, self.N, 2))
-      res_ = res_.at[..., 0].set(msgs_[..., 0, 1]) # a
-      #res_ = res_.at[..., 1].set(msgs_[..., 1, 2]) # b
-      res_ = res_.at[..., 1].set(msgs_[..., 0, 2]) # c this 1 was a 2
-      return res_.reshape((self.b, self.n, 2*self.N))
       
     def message_reduction(msgs, adj_mat):
       msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
@@ -1018,50 +986,24 @@ class HeisenbergNetBase2d(Processor):
     msgs = message_reduction(msgs, adj_mat)
 
     def phi(state, msgs):
-      # even_indices = jnp.arange(0, msgs.shape[-1], 2)
-      # _msgs1 = msgs[..., even_indices]
-      # _msgs2 = jnp.concatenate((jnp.expand_dims(_msgs1, axis=-1), jnp.expand_dims(_msgs1, axis=-1)), axis=-1)
-      # _msgs  = _msgs2.flatten(order='C').reshape(self.b, self.n, 2*self.N)
-      # state = _msgs + hidden
-      # return state
-      # return state+msgs
       return o_1(state) + o_2(msgs)
     
 
     f = hk.Linear(2*self.N)
     g = hk.Linear(2*self.N)
-    h = hk.Linear(2*self.N)#, b_init=hk.initializers.Constant(-3)) # CANT REMEMBER IF I TESTED WITH -3 OR NOTHING
+    h = hk.Linear(2*self.N)
     def delta(msgs, hidden, ret, f):
-      ##################### NEW STUFF UNTESTED ######################
       hidden = jnp.concatenate([hidden, node_args], axis=-1)
       ret    = jnp.concatenate([ret, node_args], axis=-1)
-      ##################### NEW STUFF UNTESTED ######################
       
       
       Delta_f = + jax.nn.relu(h(jax.nn.sigmoid(f(hidden) + g(hidden)))) \
                 - jax.nn.relu(h(jax.nn.sigmoid(f(ret)    + g(ret))))
-      
-      # even_indices = jnp.arange(0, msgs.shape[-1], 2)
-      # odd_indices  = jnp.arange(1, msgs.shape[-1], 2)
-
-      # _msgs1 = msgs[..., even_indices]
-      # _msgs2 = msgs[..., odd_indices]
-
-      # _hidden2 = hidden[..., odd_indices]
-      
-      # _hidden = _msgs1 * _hidden2
-
-      # return _hidden + _msgs2 + Delta_f
       return Delta_f
 
     
     ret = phi(hidden, msgs)
 
-    # if self.activation is not None:
-    #   ret = self.activation(ret)
-
-    #! New idea: implement \delta + a. After all this is why delta is a cocycle at all
-    #! node_args = delta + node_args
     node_args = delta(msgs, hidden, ret, f) + node_args
 
     if self.use_ln:
