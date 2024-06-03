@@ -34,36 +34,13 @@ import wandb
 WANDBINSTANTIATED = False
 
 ALGOS = [
-    # 'bellman_ford',
-		# 'bfs',
+    'bellman_ford',
 		# 'activity_selector',
 		# 'articulation_points',
-		# 'binary_search',
 		# 'bridges',
 		# 'bubble_sort',
-		# 'dag_shortest_paths',
-		# 'dfs',
 		# 'dijkstra',
-		# 'find_maximum_subarray_kadane',
-		# 'floyd_warshall',
-		'graham_scan',
-		'heapsort',
-		'insertion_sort',
-		'jarvis_march',
-		'kmp_matcher',
-		'lcs_length',
-		'matrix_chain_order',
-		'minimum',
-		'mst_kruskal',
 		'mst_prim',
-		'naive_string_matcher',
-		'optimal_bst',
-		'quickselect',
-		'quicksort',
-		'segments_intersect',
-		'strongly_connected_components',
-		'task_scheduling',
-		'topological_sort',
 ]
 
 flags.DEFINE_list('algorithms', ALGOS, 'Which algorithms to run.')
@@ -140,7 +117,7 @@ flags.DEFINE_integer('nb_triplet_fts', 8,
 flags.DEFINE_enum('encoder_init', 'xavier_on_scalars',
                   ['default', 'xavier_on_scalars'],
                   'Initialiser to use for the encoders.')
-flags.DEFINE_enum('processor_type', 'sheaf',
+flags.DEFINE_enum('processor_type', 'asynchronousL1',
                   ['asynchronousL3','asynchronousL1', 'heisenberg', 'deltatest', 'sheaf', 'gmpnn', 'heisenberg2d'],
                   'Processor type to use as the network P.')
 flags.DEFINE_float('basis', None,
@@ -411,14 +388,14 @@ def main(args):
   print(f"f Stalk Dim: {FLAGS.stalk_dim}")
 
   wandb_project = "asynchronous_alignment"
-  wandb_run_name = f"{FLAGS.processor_type}-HPCRUN"
+  wandb_run_name = f"{FLAGS.processor_type}-localrun"
   wandbrun = wandb.init(project=wandb_project, name=wandb_run_name)
 
   global ALGOS
   for algo in ALGOS:
     FLAGS.algorithms = [algo]
 
-    for seed in [42,43,1,2]:
+    for seed in [3,18]:
       FLAGS.seed = seed
 
     

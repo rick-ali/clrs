@@ -96,6 +96,7 @@ class SheafNetBase(Processor):
       gated: bool = False,
       stalk_dim: int = 2,
       diagonal: bool = False,
+      orthogonal: bool = True,
       name: str = 'SheafNet',
   ):
     name = 'SheafNet'
@@ -117,6 +118,7 @@ class SheafNetBase(Processor):
     self.gated = gated
     self.stalk_dim = stalk_dim
     self.diagonal = diagonal
+    self.orthogonal = orthogonal
 
   def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
       self,
@@ -180,6 +182,13 @@ class SheafNetBase(Processor):
 
         F_v_e_t = jnp.expand_dims(F_v_e_t, axis=1)
         F_v_e_t = (F_v_e_t*jnp.eye(self.stalk_dim)).squeeze(1)
+      if self.orthogonal:
+        A = jnp.triu(F_u_e)
+        A = A - jnp.einsum('...ij->...ji', A)
+        B = jnp.triu(F_v_e_t)
+        B = B - jnp.einsum('...ij->...ji', B)
+        F_u_e = jax.scipy.linalg.expm(A, max_squarings=4)
+        F_v_e_t = jax.scipy.linalg.expm(B, max_squarings=4)
 
 
       msg_args_senders = F_v_e_t @ F_u_e @ msg_args_senders 
@@ -931,8 +940,9 @@ class HeisenbergNetBase2d(Processor):
     m_2 = hk.Linear(2*self.N)
     m_e = hk.Linear(2*self.N)
     m_g = hk.Linear(2*self.N)
+    o_1 = hk.Linear(self.mid_size)
+    o_2 = hk.Linear(self.mid_size)
 
-    f = hk.Linear(self.N)
 
     tri_msgs = None
 
@@ -964,13 +974,13 @@ class HeisenbergNetBase2d(Processor):
     
     msgs = psi(z_args, z_args, edge_fts, graph_fts)
 
-    if self._msgs_mlp_sizes is not None:
-      msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
+    # if self._msgs_mlp_sizes is not None:
+    #   msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
 
-    if self.mid_act is not None:
-      msgs = self.mid_act(msgs)
+    # if self.mid_act is not None:
+    #   msgs = self.mid_act(msgs)
 
-    def message_reduction(msgs, adj_mat):
+    def message_reduction_2(msgs, adj_mat):
       msgs = msgs * jnp.expand_dims(adj_mat, -1)
       even_indices = jnp.arange(0, msgs.shape[-1], 2)
       odd_indices = jnp.arange(1, msgs.shape[-1], 2)
@@ -991,14 +1001,20 @@ class HeisenbergNetBase2d(Processor):
       msgs_ = msgs_.at[..., 0, 0].set(1)
       msgs_ = msgs_.at[..., 1, 1].set(1)
       msgs_ = msgs_.at[..., 2, 2].set(1)
-      #msgs_ = jnp.einsum('ma...ij -> m...ij', msgs_)
-      msgs_ = functools.reduce(jnp.matmul, jnp.rollaxis(msgs_, 1))
+      
+      msgs_ = jnp.einsum('ma...ij -> m...ij', msgs_)
+      #msgs_ = functools.reduce(jnp.matmul, jnp.rollaxis(msgs_, 1))
       res_  = jnp.zeros((self.b, self.n, self.N, 2))
       res_ = res_.at[..., 0].set(msgs_[..., 0, 1]) # a
       #res_ = res_.at[..., 1].set(msgs_[..., 1, 2]) # b
       res_ = res_.at[..., 1].set(msgs_[..., 0, 2]) # c this 1 was a 2
       return res_.reshape((self.b, self.n, 2*self.N))
       
+    def message_reduction(msgs, adj_mat):
+      msgs = jnp.sum(msgs * jnp.expand_dims(adj_mat, -1), axis=1)
+      return msgs
+    
+
     msgs = message_reduction(msgs, adj_mat)
 
     def phi(state, msgs):
@@ -1008,10 +1024,23 @@ class HeisenbergNetBase2d(Processor):
       # _msgs  = _msgs2.flatten(order='C').reshape(self.b, self.n, 2*self.N)
       # state = _msgs + hidden
       # return state
-      return state+msgs
+      # return state+msgs
+      return o_1(state) + o_2(msgs)
     
-    def delta(msgs, hidden, hidden_acted_on, f):
-      Delta_f = jax.nn.relu(f(hidden)) - jax.nn.relu(f(hidden_acted_on))  # f(state) = f(phi(msgs, hidden))
+
+    f = hk.Linear(2*self.N)
+    g = hk.Linear(2*self.N)
+    h = hk.Linear(2*self.N)#, b_init=hk.initializers.Constant(-3)) # CANT REMEMBER IF I TESTED WITH -3 OR NOTHING
+    def delta(msgs, hidden, ret, f):
+      ##################### NEW STUFF UNTESTED ######################
+      hidden = jnp.concatenate([hidden, node_args], axis=-1)
+      ret    = jnp.concatenate([ret, node_args], axis=-1)
+      ##################### NEW STUFF UNTESTED ######################
+      
+      
+      Delta_f = + jax.nn.relu(h(jax.nn.sigmoid(f(hidden) + g(hidden)))) \
+                - jax.nn.relu(h(jax.nn.sigmoid(f(ret)    + g(ret))))
+      
       # even_indices = jnp.arange(0, msgs.shape[-1], 2)
       # odd_indices  = jnp.arange(1, msgs.shape[-1], 2)
 
@@ -1022,16 +1051,18 @@ class HeisenbergNetBase2d(Processor):
       
       # _hidden = _msgs1 * _hidden2
 
-      #return _hidden + _msgs2 + Delta_f
+      # return _hidden + _msgs2 + Delta_f
       return Delta_f
 
     
     ret = phi(hidden, msgs)
 
-    if self.activation is not None:
-      ret = self.activation(ret)
+    # if self.activation is not None:
+    #   ret = self.activation(ret)
 
-    node_args = delta(msgs, hidden, ret, f)
+    #! New idea: implement \delta + a. After all this is why delta is a cocycle at all
+    #! node_args = delta + node_args
+    node_args = delta(msgs, hidden, ret, f) + node_args
 
     if self.use_ln:
       ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
@@ -1726,9 +1757,9 @@ def get_processor_factory(kind: str,
           out_size=out_size,
           msgs_mlp_sizes=[out_size, out_size],
           use_ln=use_ln,
-          use_triplets=True,
+          use_triplets=False,
           nb_triplet_fts=nb_triplet_fts,
-          gated=True
+          gated=False
       )
       
     elif kind == 'deltatest':
@@ -1748,7 +1779,7 @@ def get_processor_factory(kind: str,
           out_size=out_size,
           msgs_mlp_sizes=[out_size, out_size],
           use_ln=use_ln,
-          use_triplets=True,
+          use_triplets=False,
           nb_triplet_fts=nb_triplet_fts,
           gated=True,
           stalk_dim=stalk_dim
