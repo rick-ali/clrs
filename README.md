@@ -11,6 +11,7 @@ The desired algorithms are selected from the algorithm list in the same file.
 This code builds on top of the following public repositories:
 1. https://github.com/google-deepmind/clrs
 2. https://github.com/pablomlago/clrs-ls65
+
 My main contributions to the code base are:
 1. Implementation of the Sheaf architecture (SheafNet in the report)
 2. Implementation of the heisenberg2d architecture (DeltaNet in the report)
